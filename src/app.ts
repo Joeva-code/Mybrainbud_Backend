@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import routes from "./routes";
 import { errorHandler } from "./middleware/error.middleware";
+import { setupSwagger } from "./config/swagger";
 
 const app = express();
 
@@ -52,5 +53,8 @@ app.get("/health", (_req, res) => {
 
 // Error handling middleware (must be last)
 app.use(errorHandler);
+
+// Swagger API documentation
+setupSwagger(app);
 
 export default app;

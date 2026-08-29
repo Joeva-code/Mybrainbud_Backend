@@ -2,44 +2,10 @@ import { PrismaClient, User } from "@prisma/client";
 import bcrypt from "bcrypt";
 import jwt, { SignOptions } from "jsonwebtoken";
 import { v4 as uuidv4 } from "uuid";
-import { env } from "../../config/env";
-import { UnauthorizedError, ConflictError, NotFoundError, BadRequestError } from "../../utils/errors";
-import { ApiError } from "../../utils/errors";
-
-export interface RegisterDto {
-  firstName: string;
-  lastName?: string;
-  email: string;
-  password: string;
-  role?: "STUDENT" | "PARENT" | "TEACHER" | "SCHOOL_ADMIN" | "ADMIN";
-}
-
-export interface LoginDto {
-  email: string;
-  password: string;
-}
-
-export interface AuthResponse {
-  user: {
-    id: string;
-    firstName: string;
-    lastName: string | null;
-    email: string;
-    role: string;
-    isVerified: boolean;
-    isActive: boolean;
-  };
-  accessToken: string;
-  refreshToken: string;
-  expiresIn: number;
-}
-
-export interface JwtPayload {
-  userId: string;
-  email: string;
-  role: string;
-  sessionId: string;
-}
+import { createHash } from "node:crypto";
+import { env } from "../config/env";
+import { UnauthorizedError, ConflictError, NotFoundError } from "../utils/errors";
+import { RegisterDto, LoginDto, AuthResponse, JwtPayload } from "../types/auth.types";
 
 export class AuthService {
   private prisma: PrismaClient;
@@ -49,30 +15,26 @@ export class AuthService {
   }
 
   private generateAccessToken(payload: JwtPayload): string {
-    const options: SignOptions = {
-      expiresIn: env.jwtAccessExpiresIn as any,
-    };
-    return jwt.sign(payload, env.jwtAccessSecret, options);
+    return jwt.sign(payload, env.jwtAccessSecret, {
+      expiresIn: env.jwtAccessExpiresIn,
+    } as SignOptions);
   }
 
   private generateRefreshToken(payload: { sessionId: string; userId: string }): string {
-    const options: SignOptions = {
-      expiresIn: env.jwtRefreshExpiresIn as any,
-    };
-    return jwt.sign(payload, env.jwtRefreshSecret, options);
+    return jwt.sign(payload, env.jwtRefreshSecret, {
+      expiresIn: env.jwtRefreshExpiresIn,
+    } as SignOptions);
   }
 
   private hashToken(token: string): string {
-    const crypto = require("crypto");
-    return crypto.createHash("sha256").update(token).digest("hex");
+    return createHash("sha256").update(token).digest("hex");
   }
 
   private getAccessTokenExpiry(): Date {
     const expiresIn = env.jwtAccessExpiresIn;
-    // Parse time string like "15m", "1h", "7d"
     const match = expiresIn.match(/^(\d+)([smhd])$/);
     if (!match) {
-      return new Date(Date.now() + 15 * 60 * 1000); // default 15 min
+      return new Date(Date.now() + 15 * 60 * 1000);
     }
     const value = parseInt(match[1]);
     const unit = match[2];
@@ -89,7 +51,7 @@ export class AuthService {
     const expiresIn = env.jwtRefreshExpiresIn;
     const match = expiresIn.match(/^(\d+)([smhd])$/);
     if (!match) {
-      return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // default 7 days
+      return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     }
     const value = parseInt(match[1]);
     const unit = match[2];
@@ -120,7 +82,7 @@ export class AuthService {
   private getRefreshTokenMaxAgeSeconds(): number {
     const expiresIn = env.jwtRefreshExpiresIn;
     const match = expiresIn.match(/^(\d+)([smhd])$/);
-    if (!match) return 7 * 24 * 60 * 60; // 7 days
+    if (!match) return 7 * 24 * 60 * 60;
     const value = parseInt(match[1]);
     const unit = match[2];
     const seconds: Record<string, number> = {
@@ -135,7 +97,7 @@ export class AuthService {
   private getAccessTokenMaxAgeSeconds(): number {
     const expiresIn = env.jwtAccessExpiresIn;
     const match = expiresIn.match(/^(\d+)([smhd])$/);
-    if (!match) return 15 * 60; // 15 minutes
+    if (!match) return 15 * 60;
     const value = parseInt(match[1]);
     const unit = match[2];
     const seconds: Record<string, number> = {
@@ -148,7 +110,6 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
-    // Check if user already exists
     const existingUser = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -157,10 +118,8 @@ export class AuthService {
       throw new ConflictError("User with this email already exists");
     }
 
-    // Hash password
     const passwordHash = await bcrypt.hash(dto.password, 12);
 
-    // Create user
     const user = await this.prisma.user.create({
       data: {
         firstName: dto.firstName,
@@ -172,33 +131,24 @@ export class AuthService {
       },
     });
 
-    // If user is a student, create student profile
     if (user.role === "STUDENT") {
       await this.prisma.studentProfile.create({
-        data: {
-          userId: user.id,
-        },
+        data: { userId: user.id },
       });
     } else if (user.role === "PARENT") {
       await this.prisma.parentProfile.create({
-        data: {
-          userId: user.id,
-        },
+        data: { userId: user.id },
       });
     } else if (user.role === "TEACHER") {
       await this.prisma.teacherProfile.create({
-        data: {
-          userId: user.id,
-        },
+        data: { userId: user.id },
       });
     }
 
-    // Create session and return tokens
     return this.createSession(user);
   }
 
   async login(dto: LoginDto): Promise<AuthResponse> {
-    // Find user
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -215,27 +165,23 @@ export class AuthService {
       throw new UnauthorizedError("Please login using your social account");
     }
 
-    // Verify password
     const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
 
     if (!isPasswordValid) {
       throw new UnauthorizedError("Invalid email or password");
     }
 
-    // Update last login
     await this.prisma.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date() },
     });
 
-    // Create session and return tokens
     return this.createSession(user);
   }
 
   async createSession(user: User): Promise<AuthResponse> {
     const sessionId = uuidv4();
 
-    // Generate tokens
     const accessTokenPayload: JwtPayload = {
       userId: user.id,
       email: user.email!,
@@ -249,7 +195,6 @@ export class AuthService {
       sessionId,
     });
 
-    // Store session in database (hash the refresh token)
     await this.prisma.session.create({
       data: {
         id: sessionId,
@@ -277,13 +222,11 @@ export class AuthService {
 
   async refreshToken(refreshToken: string): Promise<AuthResponse> {
     try {
-      // Verify refresh token
       const decoded = jwt.verify(refreshToken, env.jwtRefreshSecret) as unknown as {
         userId: string;
         sessionId: string;
       };
 
-      // Find session
       const session = await this.prisma.session.findUnique({
         where: { id: decoded.sessionId },
       });
@@ -300,12 +243,10 @@ export class AuthService {
         throw new UnauthorizedError("Session has expired");
       }
 
-      // Verify token hash
       if (session.tokenHash !== this.hashToken(refreshToken)) {
         throw new UnauthorizedError("Invalid session token");
       }
 
-      // Find user
       const user = await this.prisma.user.findUnique({
         where: { id: decoded.userId },
       });
@@ -314,13 +255,11 @@ export class AuthService {
         throw new UnauthorizedError("User not found or inactive");
       }
 
-      // Revoke old session
       await this.prisma.session.update({
         where: { id: session.id },
         data: { revokedAt: new Date() },
       });
 
-      // Create new session
       return this.createSession(user);
     } catch (error) {
       if (error instanceof jwt.JsonWebTokenError) {
@@ -331,7 +270,6 @@ export class AuthService {
   }
 
   async logout(sessionId: string, userId: string): Promise<void> {
-    // Revoke the specific session
     const session = await this.prisma.session.findUnique({
       where: { id: sessionId },
     });
@@ -351,7 +289,6 @@ export class AuthService {
   }
 
   async logoutAll(userId: string): Promise<void> {
-    // Revoke all sessions for the user
     await this.prisma.session.updateMany({
       where: {
         userId,
@@ -365,10 +302,8 @@ export class AuthService {
 
   async validateSession(token: string): Promise<{ user: User; sessionId: string }> {
     try {
-      // Verify access token
       const decoded = jwt.verify(token, env.jwtAccessSecret) as unknown as JwtPayload;
 
-      // Find session
       const session = await this.prisma.session.findUnique({
         where: { id: decoded.sessionId },
       });
@@ -385,7 +320,6 @@ export class AuthService {
         throw new UnauthorizedError("Session has expired");
       }
 
-      // Find user
       const user = await this.prisma.user.findUnique({
         where: { id: decoded.userId },
       });

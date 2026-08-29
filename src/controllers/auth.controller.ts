@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
-import { AuthService, RegisterDto, LoginDto } from "./auth.service";
-import { success, created } from "../../utils/response";
-import prismaClient from "../../lib/prisma";
+import { AuthService } from "../services/auth.service";
+import { success, created } from "../utils/response";
+import { RegisterDto, LoginDto } from "../types/auth.types";
 
 export const register = (service: AuthService) => async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -18,13 +18,12 @@ export const login = (service: AuthService) => async (req: Request, res: Respons
     const dto: LoginDto = req.body;
     const result = await service.login(dto);
 
-    // Set refresh token as httpOnly cookie
     res.cookie("refreshToken", result.refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "strict",
       maxAge: service.getRefreshTokenMaxAgeMs(),
-      path: "/api/auth/refresh",
+      path: "/",
     });
 
     return success(res, "Login successful", result);
@@ -47,7 +46,7 @@ export const logout = (service: AuthService) => async (req: Request, res: Respon
   try {
     const authReq = req as any;
     await service.logout(authReq.sessionId, authReq.userId);
-    res.clearCookie("refreshToken", { path: "/api/auth/refresh" });
+    res.clearCookie("refreshToken", { path: "/" });
     return success(res, "Logout successful");
   } catch (error) {
     next(error);
@@ -58,17 +57,25 @@ export const logoutAll = (service: AuthService) => async (req: Request, res: Res
   try {
     const authReq = req as any;
     await service.logoutAll(authReq.userId);
-    res.clearCookie("refreshToken", { path: "/api/auth/refresh" });
+    res.clearCookie("refreshToken", { path: "/" });
     return success(res, "All sessions logged out successfully");
   } catch (error) {
     next(error);
   }
 };
 
-export const getMe = (service: AuthService) => async (req: Request, res: Response, next: NextFunction) => {
+export const getMe = () => async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as any).user;
-    const { passwordHash, ...safeUser } = user;
+    const safeUser = {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      role: user.role,
+      isVerified: user.isVerified,
+      isActive: user.isActive,
+    };
     return success(res, "User retrieved", safeUser);
   } catch (error) {
     next(error);

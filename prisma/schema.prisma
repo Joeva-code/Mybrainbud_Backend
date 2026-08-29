@@ -7,6 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// =============================================
+// ENUMS
+// =============================================
+
 enum UserRole {
   STUDENT
   PARENT
@@ -50,300 +54,6 @@ enum GoalType {
   EXAM_READINESS
   MASTERY
 }
-
-model User {
-  id           String        @id @default(uuid())
-  email        String?       @unique
-  phone        String?       @unique
-  passwordHash String?
-  firstName    String
-  lastName     String?
-  role         UserRole      @default(STUDENT)
-  authProvider AuthProvider?
-  isVerified   Boolean       @default(false)
-  isActive     Boolean       @default(true)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  lastLoginAt  DateTime?
-
-  studentProfile         StudentProfile?
-  parentProfile          ParentProfile?
-  schoolAdminProfile     SchoolAdmin?
-  teacherProfile         TeacherProfile?
-  otpVerifications       OtpVerification[]
-  sessions               Session[]
-  referrals              Referral[]               @relation("ReferralReferrer")
-  referredReferrals      Referral[]               @relation("ReferredUser")
-  NotificationPreference NotificationPreference[]
-  Notification           Notification[]
-
-  @@index([role])
-}
-
-model OtpVerification {
-  id          String    @id @default(uuid())
-  userId      String?
-  destination String
-  codeHash    String
-  expiresAt   DateTime
-  verifiedAt  DateTime?
-  attempts    Int       @default(0)
-  createdAt   DateTime  @default(now())
-
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([destination])
-  @@index([userId])
-  @@index([expiresAt])
-}
-
-model Session {
-  id        String    @id @default(uuid())
-  userId    String
-  tokenHash String    @unique
-  expiresAt DateTime
-  createdAt DateTime  @default(now())
-  revokedAt DateTime?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([expiresAt])
-}
-
-model Subject {
-  id          String   @id @default(uuid())
-  name        String   @unique
-  code        String   @unique
-  description String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  studentSubjects StudentSubject[]
-  academicGoals   AcademicGoal[]
-
-  concepts         ConceptNode[]
-  misconceptions   Misconception[]
-  questions        Question[]
-  conceptMasteries ConceptMastery[]
-  learningGaps     LearningGap[]
-  assessments      Assessment[]
-  validations      CurriculumValidation[]
-  GapClosure       GapClosure[]
-  ExamReadiness    ExamReadiness[]
-}
-
-model Exam {
-  id          String   @id @default(uuid())
-  type        ExamType @unique
-  name        String
-  description String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  studentProfiles StudentProfile[]
-  academicGoals   AcademicGoal[]
-
-  assessments    Assessment[]
-  learningGaps   LearningGap[]
-  learningPaths  LearningPath[]
-  examReadiness  ExamReadiness[]
-  examRiskAlerts ExamRiskAlert[]
-}
-
-model StudentProfile {
-  id              String      @id @default(uuid())
-  userId          String      @unique
-  classLevel      ClassLevel?
-  gender          Gender?
-  dateOfBirth     DateTime?
-  schoolName      String?
-  profileComplete Boolean     @default(false)
-  targetExamId    String?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-
-  user       User  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  targetExam Exam? @relation(fields: [targetExamId], references: [id])
-
-  subjects          StudentSubject[]
-  goals             AcademicGoal[]
-  parentLinks       ParentStudentLink[]
-  schoolEnrollments SchoolEnrollment[]
-
-  assessments            Assessment[]
-  responses              StudentResponse[]
-  conceptMasteries       ConceptMastery[]
-  learningGaps           LearningGap[]
-  gapClosures            GapClosure[]
-  learningPaths          LearningPath[]
-  tutorSessions          TutorSession[]
-  progressSnapshots      ProgressSnapshot[]
-  learningStreak         LearningStreak?
-  examReadiness          ExamReadiness[]
-  examRiskAlerts         ExamRiskAlert[]
-  notifications          Notification[]
-  progressReports        ParentWeeklyReport[]
-  subscriptions          Subscription[]
-  payments               Payment[]
-  RootCause              RootCause[]
-  ActivityRecommendation ActivityRecommendation[]
-
-  @@index([classLevel])
-  @@index([targetExamId])
-}
-
-model StudentSubject {
-  id        String   @id @default(uuid())
-  studentId String
-  subjectId String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-
-  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  subject Subject        @relation(fields: [subjectId], references: [id])
-
-  @@unique([studentId, subjectId])
-  @@index([studentId])
-  @@index([subjectId])
-}
-
-model AcademicGoal {
-  id           String    @id @default(uuid())
-  studentId    String
-  subjectId    String?
-  examId       String?
-  goalType     GoalType
-  targetScore  Float?
-  currentScore Float?
-  targetDate   DateTime?
-  description  String?
-  isActive     Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-
-  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  subject Subject?       @relation(fields: [subjectId], references: [id])
-  exam    Exam?          @relation(fields: [examId], references: [id])
-
-  @@index([studentId])
-  @@index([subjectId])
-  @@index([examId])
-}
-
-model ParentProfile {
-  id        String   @id @default(uuid())
-  userId    String   @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  children ParentStudentLink[]
-
-  subscriptions Subscription[]
-  payments      Payment[]
-  weeklyReports ParentWeeklyReport[]
-}
-
-model ParentStudentLink {
-  id        String   @id @default(uuid())
-  parentId  String
-  studentId String
-  canView   Boolean  @default(true)
-  createdAt DateTime @default(now())
-
-  parent  ParentProfile  @relation(fields: [parentId], references: [id], onDelete: Cascade)
-  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
-
-  @@unique([parentId, studentId])
-  @@index([parentId])
-  @@index([studentId])
-}
-
-model School {
-  id        String   @id @default(uuid())
-  name      String
-  code      String   @unique
-  email     String?
-  phone     String?
-  address   String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  admins      SchoolAdmin[]
-  teachers    TeacherProfile[]
-  enrollments SchoolEnrollment[]
-  licenses    SchoolLicense[]
-  purchases   SchoolPurchase[]
-}
-
-model SchoolAdmin {
-  id        String   @id @default(uuid())
-  userId    String   @unique
-  schoolId  String
-  createdAt DateTime @default(now())
-
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-
-  @@index([schoolId])
-}
-
-model TeacherProfile {
-  id        String   @id @default(uuid())
-  userId    String   @unique
-  schoolId  String?
-  createdAt DateTime @default(now())
-
-  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  school School? @relation(fields: [schoolId], references: [id])
-
-  @@index([schoolId])
-}
-
-model SchoolLicense {
-  id             String   @id @default(uuid())
-  schoolId       String
-  seatCount      Int
-  seatsUsed      Int      @default(0)
-  enrollmentCode String   @unique
-  startDate      DateTime
-  expiryDate     DateTime
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  school         School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  enrollments    SchoolEnrollment[]
-  SchoolPurchase SchoolPurchase[]
-
-  @@index([schoolId])
-}
-
-model SchoolEnrollment {
-  id         String    @id @default(uuid())
-  schoolId   String
-  licenseId  String
-  studentId  String
-  isActive   Boolean   @default(true)
-  enrolledAt DateTime  @default(now())
-  removedAt  DateTime?
-
-  school  School         @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  license SchoolLicense  @relation(fields: [licenseId], references: [id], onDelete: Cascade)
-  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
-
-  @@unique([licenseId, studentId])
-  @@index([schoolId])
-  @@index([studentId])
-}
-
-// =============================================
-// ENUMS (Additional)
-// =============================================
 
 enum AssessmentStatus {
   IN_PROGRESS
@@ -482,12 +192,313 @@ enum ContextCategory {
 }
 
 // =============================================
+// CORE USER MODELS
+// =============================================
+
+model User {
+  id           String        @id @default(uuid())
+  email        String?       @unique
+  phone        String?       @unique
+  passwordHash String?
+  firstName    String
+  lastName     String?
+  role         UserRole      @default(STUDENT)
+  authProvider AuthProvider?
+  isVerified   Boolean       @default(false)
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  lastLoginAt  DateTime?
+
+  studentProfile         StudentProfile?
+  parentProfile          ParentProfile?
+  schoolAdminProfile     SchoolAdmin?
+  teacherProfile         TeacherProfile?
+  otpVerifications       OtpVerification[]
+  sessions               Session[]
+  referrals              Referral[]               @relation("ReferralReferrer")
+  referredReferrals      Referral[]               @relation("ReferredUser")
+  NotificationPreference NotificationPreference[]
+  Notification           Notification[]
+
+  @@index([role])
+}
+
+model OtpVerification {
+  id          String    @id @default(uuid())
+  userId      String?
+  destination String
+  codeHash    String
+  expiresAt   DateTime
+  verifiedAt  DateTime?
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([destination])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Session {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// =============================================
+// EDUCATIONAL CONTENT MODELS
+// =============================================
+
+model Subject {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  studentSubjects StudentSubject[]
+  academicGoals   AcademicGoal[]
+  concepts         ConceptNode[]
+  misconceptions   Misconception[]
+  questions        Question[]
+  conceptMasteries ConceptMastery[]
+  learningGaps     LearningGap[]
+  assessments      Assessment[]
+  validations      CurriculumValidation[]
+  GapClosure       GapClosure[]
+  ExamReadiness    ExamReadiness[]
+}
+
+model Exam {
+  id          String   @id @default(uuid())
+  type        ExamType @unique
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  studentProfiles StudentProfile[]
+  academicGoals   AcademicGoal[]
+  assessments    Assessment[]
+  learningGaps   LearningGap[]
+  learningPaths  LearningPath[]
+  examReadiness  ExamReadiness[]
+  examRiskAlerts ExamRiskAlert[]
+}
+
+// =============================================
+// STUDENT & PARENT MODELS
+// =============================================
+
+model StudentProfile {
+  id              String      @id @default(uuid())
+  userId          String      @unique
+  classLevel      ClassLevel?
+  gender          Gender?
+  dateOfBirth     DateTime?
+  schoolName      String?
+  profileComplete Boolean     @default(false)
+  targetExamId    String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  user       User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetExam Exam? @relation(fields: [targetExamId], references: [id])
+
+  subjects          StudentSubject[]
+  goals             AcademicGoal[]
+  parentLinks       ParentStudentLink[]
+  schoolEnrollments SchoolEnrollment[]
+  assessments            Assessment[]
+  responses              StudentResponse[]
+  conceptMasteries       ConceptMastery[]
+  learningGaps           LearningGap[]
+  gapClosures            GapClosure[]
+  learningPaths          LearningPath[]
+  tutorSessions          TutorSession[]
+  progressSnapshots      ProgressSnapshot[]
+  learningStreak         LearningStreak?
+  examReadiness          ExamReadiness[]
+  examRiskAlerts         ExamRiskAlert[]
+  notifications          Notification[]
+  progressReports        ParentWeeklyReport[]
+  subscriptions          Subscription[]
+  payments               Payment[]
+  RootCause              RootCause[]
+  ActivityRecommendation ActivityRecommendation[]
+
+  @@index([classLevel])
+  @@index([targetExamId])
+}
+
+model StudentSubject {
+  id        String   @id @default(uuid())
+  studentId String
+  subjectId String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject Subject        @relation(fields: [subjectId], references: [id])
+
+  @@unique([studentId, subjectId])
+  @@index([studentId])
+  @@index([subjectId])
+}
+
+model AcademicGoal {
+  id           String    @id @default(uuid())
+  studentId    String
+  subjectId    String?
+  examId       String?
+  goalType     GoalType
+  targetScore  Float?
+  currentScore Float?
+  targetDate   DateTime?
+  description  String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject Subject?       @relation(fields: [subjectId], references: [id])
+  exam    Exam?          @relation(fields: [examId], references: [id])
+
+  @@index([studentId])
+  @@index([subjectId])
+  @@index([examId])
+}
+
+model ParentProfile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  children ParentStudentLink[]
+
+  subscriptions Subscription[]
+  payments      Payment[]
+  weeklyReports ParentWeeklyReport[]
+}
+
+model ParentStudentLink {
+  id        String   @id @default(uuid())
+  parentId  String
+  studentId String
+  canView   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  parent  ParentProfile  @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([parentId, studentId])
+  @@index([parentId])
+  @@index([studentId])
+}
+
+// =============================================
+// SCHOOL MODELS
+// =============================================
+
+model School {
+  id        String   @id @default(uuid())
+  name      String
+  code      String   @unique
+  email     String?
+  phone     String?
+  address   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  admins      SchoolAdmin[]
+  teachers    TeacherProfile[]
+  enrollments SchoolEnrollment[]
+  licenses    SchoolLicense[]
+  purchases   SchoolPurchase[]
+}
+
+model SchoolAdmin {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  schoolId  String
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+}
+
+model TeacherProfile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  schoolId  String?
+  createdAt DateTime @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  school School? @relation(fields: [schoolId], references: [id])
+
+  @@index([schoolId])
+}
+
+model SchoolLicense {
+  id             String   @id @default(uuid())
+  schoolId       String
+  seatCount      Int
+  seatsUsed      Int      @default(0)
+  enrollmentCode String   @unique
+  startDate      DateTime
+  expiryDate     DateTime
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  school         School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  enrollments    SchoolEnrollment[]
+  SchoolPurchase SchoolPurchase[]
+
+  @@index([schoolId])
+}
+
+model SchoolEnrollment {
+  id         String    @id @default(uuid())
+  schoolId   String
+  licenseId  String
+  studentId  String
+  isActive   Boolean   @default(true)
+  enrolledAt DateTime  @default(now())
+  removedAt  DateTime?
+
+  school  School         @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  license SchoolLicense  @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([licenseId, studentId])
+  @@index([schoolId])
+  @@index([studentId])
+}
+
+// =============================================
 // CURRICULUM KNOWLEDGE GRAPH (EP-06)
 // =============================================
-// The PRD (Section 18.1 / F-06) describes this graph as a Neo4j
-// knowledge graph traversed for root-cause analysis. These tables are
-// the relational (PostgreSQL) source of truth. The graph can be
-// mirrored/exported to Neo4j for IRT traversal without losing fidelity.
+// The PRD describes this as a Neo4j knowledge graph for root-cause analysis.
+// These tables are the relational PostgreSQL source of truth.
 // =============================================
 
 model ConceptNode {
@@ -496,7 +507,7 @@ model ConceptNode {
   code           String     @unique
   name           String
   classLevel     ClassLevel
-  examBoards     String[] // ExamType values as strings
+  examBoards     String[]
   description    String?
   isFoundational Boolean    @default(false)
   isActive       Boolean    @default(true)
@@ -526,11 +537,11 @@ model ConceptNode {
 }
 
 model PrerequisiteEdge {
-  id             String   @id @default(uuid())
-  prerequisiteId String // the earlier/foundational concept
-  dependentId    String // concept that requires the prerequisite
-  isCrossSubject Boolean  @default(false)
-  createdAt      DateTime @default(now())
+  id              String   @id @default(uuid())
+  prerequisiteId   String
+  dependentId     String
+  isCrossSubject  Boolean  @default(false)
+  createdAt        DateTime @default(now())
 
   prerequisite   ConceptNode      @relation("PrereqOutgoing", fields: [prerequisiteId], references: [id], onDelete: Cascade)
   dependent      ConceptNode      @relation("PrereqIncoming", fields: [dependentId], references: [id], onDelete: Cascade)
@@ -546,48 +557,48 @@ model Misconception {
   conceptId   String
   description String
   source      MisconceptionSource @default(TEACHER_INPUT)
-  reviewedBy  String? // subject teacher name
+  reviewedBy  String?
   reviewedAt  DateTime?
   status      ValidationStatus    @default(PENDING)
   isActive    Boolean             @default(true)
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
+  subjectId   String?
 
   concept       ConceptNode       @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+  Subject       Subject?          @relation(fields: [subjectId], references: [id])
   options       QuestionOption[]
   tutorSessions TutorSession[]
   responses     StudentResponse[]
-  Subject       Subject?          @relation(fields: [subjectId], references: [id])
-  subjectId     String?
 
   @@index([conceptId])
   @@index([status])
 }
 
 model CurriculumValidation {
-  id           String           @id @default(uuid())
-  subjectId    String
-  reviewerName String
-  status       ValidationStatus @default(PENDING)
-  signedOffAt  DateTime?
-  notes        String?
-  createdAt    DateTime         @default(now())
-
-  subject       Subject      @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  ConceptNode   ConceptNode? @relation(fields: [conceptNodeId], references: [id])
+  id            String           @id @default(uuid())
+  subjectId     String
+  reviewerName  String
+  status        ValidationStatus @default(PENDING)
+  signedOffAt   DateTime?
+  notes         String?
+  createdAt     DateTime         @default(now())
   conceptNodeId String?
+
+  subject     Subject      @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  ConceptNode ConceptNode? @relation(fields: [conceptNodeId], references: [id])
 
   @@unique([subjectId])
   @@index([status])
 }
 
 model GraphDriftFlag {
-  id             String      @id @default(uuid())
-  edgeId         String
-  flaggedPercent Float
-  status         DriftStatus @default(OPEN)
-  reviewedAt     DateTime?
-  createdAt      DateTime    @default(now())
+  id              String      @id @default(uuid())
+  edgeId          String
+  flaggedPercent  Float
+  status          DriftStatus @default(OPEN)
+  reviewedAt      DateTime?
+  createdAt       DateTime    @default(now())
 
   edge PrerequisiteEdge @relation(fields: [edgeId], references: [id], onDelete: Cascade)
 
@@ -612,14 +623,14 @@ model NigerianContextReference {
 model Question {
   id             String       @id @default(uuid())
   subjectId      String
-  conceptId      String? // primary concept (at least one; mapping via QuestionConcept)
+  conceptId      String?
   classLevel     ClassLevel
   examBoard      ExamType?
   text           String
   questionType   QuestionType @default(MULTIPLE_CHOICE)
-  difficulty     Float        @default(0) // IRT b-parameter
-  discrimination Float? // IRT a
-  guessing       Float? // IRT c
+  difficulty     Float        @default(0)
+  discrimination Float?
+  guessing       Float?
   explanation    String?
   isActive       Boolean      @default(true)
   createdAt      DateTime     @default(now())
@@ -663,21 +674,21 @@ model QuestionConcept {
 }
 
 model Assessment {
-  id             String           @id @default(uuid())
-  studentId      String
-  subjectId      String
-  examId         String?
-  classLevel     ClassLevel
-  status         AssessmentStatus @default(IN_PROGRESS)
-  totalQuestions Int
+  id              String           @id @default(uuid())
+  studentId       String
+  subjectId       String
+  examId          String?
+  classLevel      ClassLevel
+  status          AssessmentStatus @default(IN_PROGRESS)
+  totalQuestions  Int
   currentIndex   Int              @default(0)
-  theta          Float? // IRT ability estimate
-  startedAt      DateTime         @default(now())
-  completedAt    DateTime?
-  expiresAt      DateTime?
-  resumeToken    String?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  theta           Float?
+  startedAt       DateTime         @default(now())
+  completedAt     DateTime?
+  expiresAt       DateTime?
+  resumeToken     String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   student   StudentProfile       @relation(fields: [studentId], references: [id], onDelete: Cascade)
   subject   Subject              @relation(fields: [subjectId], references: [id])
@@ -734,8 +745,8 @@ model ConceptMastery {
   studentId      String
   conceptId      String
   subjectId      String
-  masteryScore   Float         @default(0) // 0-100
-  confidence     Float         @default(0) // 0-1
+  masteryScore   Float         @default(0)
+  confidence     Float         @default(0)
   status         MasteryStatus @default(NOT_ASSESSED)
   lastAssessedAt DateTime?
   updatedAt      DateTime      @updatedAt
@@ -784,11 +795,11 @@ model RootCause {
   studentId       String
   gapId           String
   rootConceptId   String
-  sourceConceptId String? // downstream concept that triggered detection
+  sourceConceptId String?
   confidence      Float
-  explanation     String? // plain-language
+  explanation     String?
   hasCrossSubject Boolean  @default(false)
-  isDisplayed     Boolean  @default(false) // only if confidence >= 0.6
+  isDisplayed     Boolean  @default(false)
   createdAt       DateTime @default(now())
 
   student       StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
@@ -827,7 +838,7 @@ model LearningPathStep {
   conceptId    String
   orderIndex   Int
   activityType ActivityType @default(TUTOR_SESSION)
-  status       GapStatus    @default(ACTIVE) // PENDING/IN_PROGRESS/DONE
+  status       GapStatus    @default(ACTIVE)
   dueDate      DateTime?
   completedAt  DateTime?
 
@@ -877,7 +888,7 @@ model TutorSession {
   costNgn           Float?
   costReviewFlagged Boolean            @default(false)
   fallbackTriggered Boolean            @default(false)
-  flaggedForReview  Boolean            @default(false) // hallucination/alignment
+  flaggedForReview  Boolean            @default(false)
   startedAt         DateTime           @default(now())
   completedAt       DateTime?
   createdAt         DateTime           @default(now())
@@ -929,7 +940,7 @@ model TutorPracticeQuestion {
   id            String   @id @default(uuid())
   practiceSetId String
   prompt        String
-  options       String? // JSON array
+  options       String?
   correctAnswer String
   studentAnswer String?
   isCorrect     Boolean?
@@ -950,7 +961,7 @@ model ProgressSnapshot {
   snapshotDate           DateTime @default(now())
   totalGapsDiagnosed     Int      @default(0)
   gapsClosed             Int      @default(0)
-  cmg                    Float    @default(0) // curriculum mastery gain %
+  cmg                    Float    @default(0)
   activeStreak           Int      @default(0)
   nextRecommendedSession String?
   createdAt              DateTime @default(now())
@@ -998,7 +1009,7 @@ model ExamReadiness {
   studentId            String
   examId               String
   subjectId            String?
-  readinessScore       Float // 0-100
+  readinessScore       Float
   predictedGradeBand   String?
   predictionConfidence Float?
   studyPace            Float?
@@ -1036,7 +1047,7 @@ model NotificationPreference {
   id            String              @id @default(uuid())
   userId        String
   channel       NotificationChannel @default(PUSH)
-  reminderTimes String[]            @default([]) // ["18:00"]
+  reminderTimes String[]            @default([])
   enabled       Boolean             @default(true)
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
@@ -1048,8 +1059,8 @@ model NotificationPreference {
 
 model Notification {
   id                  String              @id @default(uuid())
-  userId              String // recipient (student or parent)
-  studentId           String? // context
+  userId              String
+  studentId           String?
   type                NotificationType
   channel             NotificationChannel
   title               String
@@ -1060,10 +1071,10 @@ model Notification {
   relatedGapId        String?
   relatedAssessmentId String?
   createdAt           DateTime            @default(now())
+  studentProfileId    String?
 
   user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   StudentProfile   StudentProfile? @relation(fields: [studentProfileId], references: [id])
-  studentProfileId String?
 
   @@index([userId, status])
 }
@@ -1074,7 +1085,7 @@ model ParentWeeklyReport {
   studentId      String
   weekStart      DateTime
   weekEnd        DateTime
-  summaryJson    String? // JSON
+  summaryJson    String?
   channel        NotificationChannel
   deliveryStatus NotificationStatus  @default(PENDING)
   sentAt         DateTime?
@@ -1110,7 +1121,7 @@ model Plan {
 model Subscription {
   id                     String             @id @default(uuid())
   studentId              String
-  parentId               String? // payer
+  parentId               String?
   planId                 String
   billingCycle           BillingCycle
   status                 SubscriptionStatus @default(ACTIVE)
@@ -1152,12 +1163,12 @@ model Payment {
   paidAt            DateTime?
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
+  studentProfileId  String?
+  parentProfileId   String?
 
   subscription     Subscription?    @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
   StudentProfile   StudentProfile?  @relation(fields: [studentProfileId], references: [id])
-  studentProfileId String?
   ParentProfile    ParentProfile?   @relation(fields: [parentProfileId], references: [id])
-  parentProfileId  String?
   SchoolPurchase   SchoolPurchase[]
 
   @@index([subscriptionId])

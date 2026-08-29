@@ -1,10 +1,9 @@
-import { z, ZodError } from "zod";
+import { ZodError } from "zod";
 import { ValidationError } from "../utils/errors";
 
 export function validate(schema: any) {
   return (req: any, res: any, next: any) => {
     try {
-      // Parse and validate request body
       req.body = schema.parse(req.body);
       next();
     } catch (error) {
@@ -55,3 +54,6 @@ export function validateQuery(schema: any) {
     }
   };
 }
+
+export * from "./auth.validator";
+export * from "./student.validator";

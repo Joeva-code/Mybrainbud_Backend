@@ -1,12 +1,13 @@
 import { Request, Response, NextFunction } from "express";
-import { ApiError, ConflictError, NotFoundError } from "../utils/errors";
+import { ZodError } from "zod";
+import { ApiError } from "../utils/errors";
 import { failure } from "../utils/response";
 
 export function errorHandler(
   err: any,
   req: Request,
   res: Response,
-  next: NextFunction
+  _next: NextFunction
 ) {
   console.error(err);
 
@@ -26,7 +27,7 @@ export function errorHandler(
   }
 
   if (err instanceof ZodError) {
-    const errors = err.errors.map((e) => ({
+    const errors = err.issues.map((e: any) => ({
       field: e.path.join("."),
       message: e.message,
     }));
@@ -34,12 +35,4 @@ export function errorHandler(
   }
 
   return failure(res, "Internal server error", 500);
-}
-
-class ZodError extends Error {
-  errors: any[];
-  constructor(errors: any[]) {
-    super("ZodError");
-    this.errors = errors;
-  }
 }
