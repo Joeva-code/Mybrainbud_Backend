@@ -1,0 +1,560 @@
+{
+  "info": {
+    "name": "MyBrainBud Authentication API",
+    "description": "Authentication endpoints for the MyBrainBud backend (v1.1.0).\n\nCovers the registration -> OTP verification -> session journey, login, Google sign-in, password reset, and session management.\n\nSETUP:\n1. Set `baseUrl` (defaults to http://localhost:5000).\n2. Start the server (npm start) and run the Prisma migration.\n3. Run the requests in order inside the 'Authentication' folder.\n   The access/refresh tokens are captured automatically after\n   register, verify-otp, login, google, and refresh, so /me, logout\n   and logout-all work without manual copy/paste.\n\nNOTES:\n- The refresh token is also set as an HttpOnly cookie by the server.\n  For cookie-based testing, use Postman's cookie jar / a browser.\n- Registration returns NO tokens; verify the OTP first. The code is\n  only delivered by email (never returned by the API). In development\n  with EMAIL_DELIVERY_PROVIDER=console, read the code from the server log.\n- Rate limits: most endpoints 5 req / 15 min / IP; verify-otp and\n  google 10 req / 15 min / IP.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "testEmail",
+      "value": "postman.test@example.com"
+    },
+    {
+      "key": "testPassword",
+      "value": "SecurePass@123"
+    },
+    {
+      "key": "googleCredential",
+      "value": ""
+    },
+    {
+      "key": "resetToken",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Check API health status.\n\nReturns 200 with `{ success, service, status }`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is mybrainbud-api', () => pm.expect(pm.response.json().service).to.eql('mybrainbud-api'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "POST /api/auth/register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Register a new account.\n\n- Creates the user + role-specific profile transactionally.\n- Issues NO tokens. An OTP challenge is created and the 4-digit code is delivered by email. Verification is required to obtain a session.\n- acceptTerms must be true. role may only be STUDENT, PARENT, or TEACHER via public registration (ADMIN/SCHOOL_ADMIN are rejected).\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 201 (created) | 400 (validation) | 409 (email exists) | 503 (no delivery provider).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"John\",\n  \"lastName\": \"Doe\",\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\",\n  \"acceptTerms\": true,\n  \"role\": \"STUDENT\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-capture tokens so chained requests (e.g. /me) work immediately.",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json && json.data && json.data.accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', json.data.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', json.data.refreshToken);",
+                  "  }",
+                  "}",
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('no tokens issued at registration', () => pm.expect(pm.response.json().data.accessToken).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/verify-otp",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/verify-otp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "verify-otp"
+              ]
+            },
+            "description": "Verify the registration OTP.\n\n- Consumes the 4-digit challenge (single use), marks the email verified, and issues the first authenticated session (access + refresh tokens).\n- Paste the code from the email (or the server log in development) into code.\n\nRate limit: 10 req / 15 min / IP. Per-code attempt limit enforced server-side.\n\nResponses: 200 | 400 (code not 4 digits) | 401 (invalid/expired/used/exhausted) | 403 (inactive account).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"code\": \"1234\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-capture tokens so chained requests (e.g. /me) work immediately.",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json && json.data && json.data.accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', json.data.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', json.data.refreshToken);",
+                  "  }",
+                  "}",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/resend-otp",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/resend-otp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "resend-otp"
+              ]
+            },
+            "description": "Resend the registration verification code.\n\n- Always returns a generic response so it cannot be used to discover whether an account exists.\n- A 60s per-account cooldown and 5/hour cap are enforced silently. Issuing a new code supersedes the previous one.\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 200 (generic) | 400 (validation) | 503 (no delivery provider).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /api/auth/login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Authenticate with email + password.\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 200 | 400 (validation) | 401 (invalid credentials) | 403 (account unverified or inactive) | 429 (rate limit).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-capture tokens so chained requests (e.g. /me) work immediately.",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json && json.data && json.data.accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', json.data.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', json.data.refreshToken);",
+                  "  }",
+                  "}",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/google",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/google",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "google"
+              ]
+            },
+            "description": "Sign in with a Google Identity Services ID token.\n\n- The credential is the ID token from Google Identity Services (the credential field in the GIS response). It is verified server-side (signature, audience, issuer, expiry, email_verified).\n- Existing password-based accounts are NOT taken over (403).\n\nRate limit: 10 req / 15 min / IP.\n\nResponses: 200 | 400 | 401 (invalid token / unverified email) | 403 (password account exists) | 409 (race) | 503 (GOOGLE_CLIENT_ID not set).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"credential\": \"{{googleCredential}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-capture tokens so chained requests (e.g. /me) work immediately.",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json && json.data && json.data.accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', json.data.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', json.data.refreshToken);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/refresh",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Exchange a refresh token for a new access + refresh token pair (rotation).\n\n- The token may be supplied in the body OR via the HttpOnly refreshToken cookie (the controller falls back to the cookie).\n- Refresh tokens are rotated on every call; replaying a rotated token is rejected.\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 200 | 400 (missing token) | 401 (invalid/expired/revoked).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-capture tokens so chained requests (e.g. /me) work immediately.",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json && json.data && json.data.accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', json.data.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', json.data.refreshToken);",
+                  "  }",
+                  "}",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/auth/me",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Get the currently authenticated user. Requires a valid access token."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns a user id', () => pm.expect(pm.response.json().data.id).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Revoke the current session and clear the refresh cookie. Requires auth."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/logout-all",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout-all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout-all"
+              ]
+            },
+            "description": "Revoke ALL sessions for the authenticated user and clear the refresh cookie. Requires auth."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/forgot-password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/forgot-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "forgot-password"
+              ]
+            },
+            "description": "Request a single-use password reset token (delivered by email).\n\n- Always returns the same generic response regardless of whether the account exists (enumeration-safe).\n- Tokens are 256-bit random values, stored only as SHA-256 hashes, and expire after 30 minutes.\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 200 (generic) | 400 (validation) | 503 (no delivery provider).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST /api/auth/reset-password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/reset-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "reset-password"
+              ]
+            },
+            "description": "Consume a reset token and set a new password.\n\n- Re-hashes the password with bcrypt (12 rounds), marks the token used (single use), and revokes ALL of the user's active sessions.\n- Paste the token from the reset email into token.\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 200 | 400 (validation or invalid/expired/reused token) | 429 (rate limit).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{resetToken}}\",\n  \"password\": \"NewSecurePass@456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

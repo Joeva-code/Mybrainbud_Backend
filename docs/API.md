@@ -13,6 +13,15 @@
 
 ---
 
+> **Postman Collection:** A ready-to-import Postman collection with all
+> authentication endpoints, auto token capture, and example request bodies is
+> available at
+> [`docs/MyBrainBud_Auth.postman_collection.json`](./MyBrainBud_Auth.postman_collection.json).
+> In Postman, use **Import → File** to load it, then run the requests in the
+> `Authentication` folder in order.
+
+---
+
 ## 1. Overview
 
 ### What is MyBrainBud?
