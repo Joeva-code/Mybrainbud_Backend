@@ -88,6 +88,34 @@ describe("AuthService.register", () => {
     expect(db.users).toHaveLength(1);
   });
 
+  it("splits a single design 'name' field into firstName/lastName on persist", async () => {
+    const result = await service.register({
+      name: "Ada Lovelace",
+      email: "ada@example.com",
+      password: "SecurePass@123",
+      role: "STUDENT",
+      acceptTerms: true,
+    } as RegisterDto);
+
+    expect(result.user.firstName).toBe("Ada");
+    expect(result.user.lastName).toBe("Lovelace");
+    expect(db.users[0].firstName).toBe("Ada");
+    expect(db.users[0].lastName).toBe("Lovelace");
+  });
+
+  it("uses the whole single name as firstName when only one token is given", async () => {
+    const result = await service.register({
+      name: "Prince",
+      email: "prince@example.com",
+      password: "SecurePass@123",
+      role: "STUDENT",
+      acceptTerms: true,
+    } as RegisterDto);
+
+    expect(result.user.firstName).toBe("Prince");
+    expect(result.user.lastName).toBeNull();
+  });
+
   it("maps unique-constraint races to a conflict", async () => {
     db.throwUniqueOnUserCreate = true;
     await expect(service.register(validDto)).rejects.toThrow(ConflictError);

@@ -32,6 +32,27 @@ function maskEmail(email: string): string {
   return `${email.slice(0, 1)}***${email.slice(at)}`;
 }
 
+/**
+ * Resolves a firstName/lastName pair for persistence from the registration
+ * payload. The current design sends a single "name" field (e.g. "John Doe");
+ * legacy clients send firstName/lastName. At least one is guaranteed by the
+ * validator. When a single name is provided, the first token becomes the
+ * firstName and the remainder the lastName.
+ */
+function resolveName(dto: RegisterDto): { firstName: string; lastName: string | null } {
+  if (dto.name && dto.name.trim().length > 0) {
+    const parts = dto.name.trim().split(/\s+/);
+    return {
+      firstName: parts[0],
+      lastName: parts.length > 1 ? parts.slice(1).join(" ") : null,
+    };
+  }
+  return {
+    firstName: (dto.firstName ?? "").trim(),
+    lastName: dto.lastName ? dto.lastName.trim() : null,
+  };
+}
+
 export interface AuthServiceDeps {
   otpService?: OtpService;
   verifyGoogleIdToken?: (idToken: string) => Promise<GoogleVerifiedProfile>;
@@ -159,6 +180,11 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, AuthConstants.BCRYPT_ROUNDS);
 
+    // The design supplies a single "name" field; the schema persists a
+    // firstName/lastName pair. Resolve the pair from whichever the client sent
+    // (validator guarantees at least one of name/firstName is present).
+    const { firstName, lastName } = resolveName(dto);
+
     // User + role-specific profile are created atomically so a partial
     // failure can never leave orphaned records.
     let user: User;
@@ -166,8 +192,8 @@ export class AuthService {
       user = await this.prisma.$transaction(async (tx) => {
         const created = await tx.user.create({
           data: {
-            firstName: dto.firstName.trim(),
-            lastName: dto.lastName ? dto.lastName.trim() : null,
+            firstName,
+            lastName,
             email,
             passwordHash,
             role: dto.role || "STUDENT",

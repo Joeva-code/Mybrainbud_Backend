@@ -59,6 +59,36 @@ describe("auth validators", () => {
       expect(registerSchema.safeParse({ ...validRegister, role: "PARENT" }).success).toBe(true);
       expect(registerSchema.safeParse({ ...validRegister, role: "TEACHER" }).success).toBe(true);
     });
+
+    it("accepts a single name field (current design) without firstName", () => {
+      const parsed = registerSchema.parse({
+        name: "John Doe",
+        email: "john.doe@example.com",
+        password: "SecurePass@123",
+        acceptTerms: true,
+      });
+      expect(parsed.name).toBe("John Doe");
+    });
+
+    it("rejects a payload with neither name nor firstName", () => {
+      const { firstName: _omit, ...withoutName } = validRegister;
+      expect(registerSchema.safeParse(withoutName).success).toBe(false);
+    });
+
+    it("accepts a matching confirmPassword (frontend-only, not persisted)", () => {
+      expect(
+        registerSchema.safeParse({ ...validRegister, confirmPassword: "SecurePass@123" }).success
+      ).toBe(true);
+    });
+
+    it("rejects a confirmPassword that does not match", () => {
+      const result = registerSchema.safeParse({
+        ...validRegister,
+        confirmPassword: "Different@123",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues.some((i) => i.path.join(".") === "confirmPassword")).toBe(true);
+    });
   });
 
   describe("loginSchema", () => {

@@ -276,10 +276,10 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 **Request Body:**
 ```json
 {
-  "firstName": "John",
-  "lastName": "Doe",
+  "name": "John Doe",
   "email": "john.doe@example.com",
   "password": "SecurePass@123",
+  "confirmPassword": "SecurePass@123",
   "acceptTerms": true,
   "role": "STUDENT"
 }
@@ -287,15 +287,17 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| firstName | string | Yes | 1-100 characters |
-| lastName | string | No | Max 100 characters |
+| name | string | Yes* | Full name (current design); split into firstName/lastName on persist |
+| firstName | string | Yes* | Legacy alternative to `name` (kept for backward compatibility) |
+| lastName | string | No | Max 100 characters (only used with `firstName`) |
 | email | string | Yes | Valid email format; normalized to lowercase |
 | password | string | Yes | Min 8 chars, must contain uppercase, lowercase, number, special char |
+| confirmPassword | string | No | Must match `password` if sent; frontend-only, never stored |
 | acceptTerms | boolean | Yes | Must be `true` (terms/consent checkbox) |
 | role | enum | No | STUDENT, PARENT, TEACHER only (default: STUDENT). ADMIN/SCHOOL_ADMIN cannot be created via public registration |
 
-> `confirmPassword` is a frontend concern and is not stored; unknown fields are
-> stripped by validation.
+> \* Either `name` **or** `firstName` must be provided. `confirmPassword` is a
+> frontend concern and is never stored; unknown fields are stripped by validation.
 
 **Response (201 Created):**
 ```json

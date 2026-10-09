@@ -1,24 +1,53 @@
 import { z } from "zod";
 
-export const registerSchema = z.object({
-  firstName: z.string().min(1, "First name is required").max(100),
-  lastName: z.string().max(100).optional(),
-  email: z.string().email("Invalid email address"),
-  password: z
-    .string()
-    .min(8, "Password must be at least 8 characters")
-    .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
-    .regex(/[a-z]/, "Password must contain at least one lowercase letter")
-    .regex(/[0-9]/, "Password must contain at least one number")
-    .regex(/[^A-Za-z0-9]/, "Password must contain at least one special character"),
-  // Public registration may only create non-privileged roles. ADMIN and
-  // SCHOOL_ADMIN accounts require an explicitly authorized provisioning path.
-  role: z.enum(["STUDENT", "PARENT", "TEACHER"]).default("STUDENT"),
-  // The registration design includes a terms/consent checkbox.
-  acceptTerms: z
-    .boolean()
-    .refine((accepted) => accepted === true, "You must accept the terms and conditions"),
-});
+/**
+ * The registration form in the MyBrainBud design uses a single "Name" field.
+ * We accept either:
+ *   - `name` (single field, e.g. "John Doe"), which is split into
+ *     firstName/lastName before persistence, or
+ *   - the original `firstName` (+ optional `lastName`) fields, kept for
+ *     backward compatibility with existing clients.
+ * `confirmPassword` is a frontend/request-validation concern only and is
+ * never persisted.
+ */
+const passwordRule = z
+  .string()
+  .min(8, "Password must be at least 8 characters")
+  .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
+  .regex(/[a-z]/, "Password must contain at least one lowercase letter")
+  .regex(/[0-9]/, "Password must contain at least one number")
+  .regex(/[^A-Za-z0-9]/, "Password must contain at least one special character");
+
+export const registerSchema = z
+  .object({
+    // Single-field name from the current design.
+    name: z.string().trim().min(1, "Name is required").max(100).optional(),
+    // Legacy split fields (still supported for backward compatibility).
+    firstName: z.string().trim().min(1).max(100).optional(),
+    lastName: z.string().trim().max(100).optional(),
+    email: z.string().email("Invalid email address"),
+    password: passwordRule,
+    // Frontend-only confirmation; validated here so the UI gets a precise
+    // error, but it is never stored.
+    confirmPassword: z.string().optional(),
+    // Public registration may only create non-privileged roles. ADMIN and
+    // SCHOOL_ADMIN accounts require an explicitly authorized provisioning path.
+    role: z.enum(["STUDENT", "PARENT", "TEACHER"]).default("STUDENT"),
+    // The registration design includes a terms/consent checkbox.
+    acceptTerms: z
+      .boolean()
+      .refine((accepted) => accepted === true, "You must accept the terms and conditions"),
+  })
+  // A name must be supplied in one form or the other.
+  .refine((data) => Boolean(data.name || data.firstName), {
+    message: "Name is required",
+    path: ["name"],
+  })
+  // When confirmPassword is sent it must match the password.
+  .refine((data) => data.confirmPassword === undefined || data.confirmPassword === data.password, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
 
 export const loginSchema = z.object({
   email: z.string().email("Invalid email address"),

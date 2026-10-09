@@ -98,10 +98,10 @@
                 "register"
               ]
             },
-            "description": "Register a new account.\n\n- Creates the user + role-specific profile transactionally.\n- Issues NO tokens. An OTP challenge is created and the 4-digit code is delivered by email. Verification is required to obtain a session.\n- acceptTerms must be true. role may only be STUDENT, PARENT, or TEACHER via public registration (ADMIN/SCHOOL_ADMIN are rejected).\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 201 (created) | 400 (validation) | 409 (email exists) | 503 (no delivery provider).",
+            "description": "Register a new account.\n\n- Creates the user + role-specific profile transactionally. The single\n  `name` field from the design is split into firstName/lastName on persist.\n- Issues NO tokens. An OTP challenge is created and the 4-digit code is delivered by email. Verification is required to obtain a session.\n- acceptTerms must be true. role may only be STUDENT, PARENT, or TEACHER via public registration (ADMIN/SCHOOL_ADMIN are rejected).\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 201 (created) | 400 (validation) | 409 (email exists) | 503 (no delivery provider).",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"firstName\": \"John\",\n  \"lastName\": \"Doe\",\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\",\n  \"acceptTerms\": true,\n  \"role\": \"STUDENT\"\n}",
+              "raw": "{\n  \"name\": \"John Doe\",\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\",\n  \"confirmPassword\": \"{{testPassword}}\",\n  \"acceptTerms\": true,\n  \"role\": \"STUDENT\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

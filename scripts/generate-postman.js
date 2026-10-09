@@ -108,16 +108,17 @@ authItems.push(
   req("POST /api/auth/register", "POST", "/api/auth/register", {
     desc:
       "Register a new account.\n\n" +
-      "- Creates the user + role-specific profile transactionally.\n" +
+      "- Creates the user + role-specific profile transactionally. The single\n" +
+      "  `name` field from the design is split into firstName/lastName on persist.\n" +
       "- Issues NO tokens. An OTP challenge is created and the 4-digit code is delivered by email. Verification is required to obtain a session.\n" +
       "- acceptTerms must be true. role may only be STUDENT, PARENT, or TEACHER via public registration (ADMIN/SCHOOL_ADMIN are rejected).\n\n" +
       "Rate limit: 5 req / 15 min / IP.\n\n" +
       "Responses: 201 (created) | 400 (validation) | 409 (email exists) | 503 (no delivery provider).",
     body: {
-      firstName: "John",
-      lastName: "Doe",
+      name: "John Doe",
       email: "{{testEmail}}",
       password: "{{testPassword}}",
+      confirmPassword: "{{testPassword}}",
       acceptTerms: true,
       role: "STUDENT",
     },

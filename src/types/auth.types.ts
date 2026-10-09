@@ -1,8 +1,13 @@
 export interface RegisterDto {
-  firstName: string;
+  /** Single-field name from the current design; split into firstName/lastName. */
+  name?: string;
+  /** Legacy split fields, still supported for backward compatibility. */
+  firstName?: string;
   lastName?: string;
   email: string;
   password: string;
+  /** Frontend-only confirmation; validated but never persisted. */
+  confirmPassword?: string;
   /** Public registration may only create non-privileged roles. */
   role?: "STUDENT" | "PARENT" | "TEACHER";
   /** Must be true — the registration UI requires accepting the terms. */
