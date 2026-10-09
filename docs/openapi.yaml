@@ -1,0 +1,511 @@
+openapi: 3.0.3
+info:
+  title: MyBrainBud API
+  description: |
+    REST API for MyBrainBud - AI-Powered Nigerian Exam Preparation Platform
+
+    ## Overview
+    MyBrainBud is a comprehensive backend API designed to support an intelligent
+    learning platform for Nigerian students preparing for BECE, WAEC, NECO, and JAMB
+    examinations.
+
+    ## Authentication
+    This API uses JWT (JSON Web Token) authentication. To authenticate requests:
+    1. Register or login to receive access and refresh tokens
+    2. Include the access token in the `Authorization` header: `Bearer <token>`
+    3. Access tokens expire after 15 minutes by default
+    4. Use the refresh token endpoint to obtain new access tokens
+
+    ## Rate Limiting
+    Authentication endpoints (`/api/auth/login`, `/api/auth/register`, `/api/auth/refresh`)
+    are rate-limited to 5 requests per 15-minute window per IP address.
+
+    ## Errors
+    All errors follow a consistent format:
+    ```json
+    {
+      "success": false,
+      "message": "Error description",
+      "errors": [{ "field": "fieldName", "message": "Field-specific error" }]
+    }
+    ```
+  version: 1.0.0
+  contact:
+    name: MyBrainBud Support
+servers:
+  - url: http://localhost:5000
+    description: Development server
+  - url: https://api.mybrainbud.com
+    description: Production server
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Auth
+    description: Authentication and session management
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns the health status of the API service
+      operationId: healthCheck
+      tags:
+        - Health
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  service:
+                    type: string
+                    example: mybrainbud-api
+                  status:
+                    type: string
+                    example: healthy
+
+  /api/auth/register:
+    post:
+      summary: Register a new user
+      description: |
+        Creates a new user account with the specified role.
+        Automatically creates associated profile (StudentProfile, ParentProfile, or TeacherProfile).
+        Returns access and refresh tokens upon successful registration.
+      operationId: register
+      tags:
+        - Auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              firstName: John
+              lastName: Doe
+              email: john.doe@example.com
+              password: SecurePass@123
+              role: STUDENT
+      responses:
+        '201':
+          description: Registration successful
+          headers:
+            Set-Cookie:
+              description: Refresh token cookie (httpOnly)
+              schema:
+                type: string
+                example: refreshToken=eyJhbGc...; HttpOnly; Path=/; Max-Age=604800; SameSite=Strict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/login:
+    post:
+      summary: User login
+      description: |
+        Authenticates a user with email and password.
+        Returns access and refresh tokens.
+        Sets refresh token as an httpOnly cookie.
+        Rate limited to 5 requests per 15 minutes per IP.
+      operationId: login
+      tags:
+        - Auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: john.doe@example.com
+              password: SecurePass@123
+      responses:
+        '200':
+          description: Login successful
+          headers:
+            Set-Cookie:
+              description: Refresh token cookie (httpOnly)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Too many requests (rate limited)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: Too many authentication attempts, please try again later.
+
+  /api/auth/refresh:
+    post:
+      summary: Refresh access token
+      description: |
+        Exchanges a valid refresh token for a new access token.
+        Revokes the old session and creates a new one.
+        The refresh token can be sent in the request body or as a cookie.
+      operationId: refreshToken
+      tags:
+        - Auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+                  description: The refresh token received during login or registration
+                  example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/me:
+    get:
+      summary: Get current user
+      description: |
+        Returns the profile of the currently authenticated user.
+        Requires a valid access token in the Authorization header.
+      operationId: getMe
+      tags:
+        - Auth
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: User profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: User retrieved
+                  data:
+                    $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: Unauthorized - invalid or missing token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/logout:
+    post:
+      summary: Logout current session
+      description: |
+        Revokes the current session and invalidates the refresh token.
+        Clears the refresh token cookie.
+      operationId: logout
+      tags:
+        - Auth
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Logout successful
+                  data:
+                    type: null
+                    example: null
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/logout-all:
+    post:
+      summary: Logout all sessions
+      description: |
+        Revokes all sessions for the current user.
+        Clears the refresh token cookie.
+      operationId: logoutAll
+      tags:
+        - Auth
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: All sessions logged out successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: All sessions logged out successfully
+                  data:
+                    type: null
+                    example: null
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token obtained from login or registration
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required:
+        - firstName
+        - email
+        - password
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: User's first name
+          example: John
+        lastName:
+          type: string
+          maxLength: 100
+          description: User's last name (optional)
+          example: Doe
+        email:
+          type: string
+          format: email
+          description: User's email address (must be unique)
+          example: john.doe@example.com
+        password:
+          type: string
+          minLength: 8
+          pattern: (?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])
+          description: |
+            Password must contain:
+            - At least 8 characters
+            - At least one uppercase letter
+            - At least one lowercase letter
+            - At least one number
+            - At least one special character
+          example: SecurePass@123
+        role:
+          type: string
+          enum:
+            - STUDENT
+            - PARENT
+            - TEACHER
+            - SCHOOL_ADMIN
+            - ADMIN
+          default: STUDENT
+          description: User role (defaults to STUDENT)
+          example: STUDENT
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          description: User's registered email
+          example: john.doe@example.com
+        password:
+          type: string
+          description: User's password
+          example: SecurePass@123
+
+    AuthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Registration successful
+        data:
+          type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/UserProfile'
+            accessToken:
+              type: string
+              description: JWT access token (valid for 15 minutes by default)
+              example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+            refreshToken:
+              type: string
+              description: JWT refresh token (valid for 7 days by default)
+              example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+            expiresIn:
+              type: integer
+              description: Access token expiry in seconds
+              example: 900
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique user identifier
+          example: 550e8400-e29b-41d4-a716-446655440000
+        firstName:
+          type: string
+          example: John
+        lastName:
+          type: string
+          nullable: true
+          example: Doe
+        email:
+          type: string
+          format: email
+          example: john.doe@example.com
+        role:
+          type: string
+          enum:
+            - STUDENT
+            - PARENT
+            - TEACHER
+            - SCHOOL_ADMIN
+            - ADMIN
+          example: STUDENT
+        isVerified:
+          type: boolean
+          description: Whether the user's email has been verified
+          example: false
+        isActive:
+          type: boolean
+          description: Whether the user account is active
+          example: true
+
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          description: Human-readable error message
+          example: Invalid email or password
+        errors:
+          type: array
+          nullable: true
+          description: Array of field-specific validation errors (if applicable)
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                description: Name of the field that failed validation
+                example: email
+              message:
+                type: string
+                description: Validation error message for this field
+                example: Invalid email address
+
+    ValidationError:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: Validation failed
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                example: password
+              message:
+                type: string
+                example: Password must contain at least one uppercase letter

@@ -6,3 +6,9 @@ dist/
 
 coverage/
 *.log
+
+# Neon
+.neon/
+
+# Generated SQL schema (use prisma/schema.prisma as source of truth)
+init.sql
