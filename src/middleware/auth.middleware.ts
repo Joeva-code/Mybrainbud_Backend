@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { UnauthorizedError } from "../utils/errors";
+import { UnauthorizedError, ForbiddenError } from "../utils/errors";
 import prisma from "../lib/prisma";
 import { env } from "../config/env";
 import jwt, { JsonWebTokenError, TokenExpiredError } from "jsonwebtoken";
@@ -70,6 +70,14 @@ export function authenticate() {
 
       if (!user || !user.isActive) {
         throw new UnauthorizedError("Account is inactive. Please contact support.");
+      }
+
+      // Unverified contacts must complete OTP verification before they can
+      // access any protected application resource.
+      if (!user.isVerified) {
+        throw new ForbiddenError(
+          "Account not verified. Please verify your email before accessing this resource."
+        );
       }
 
       // Attach user and session to request

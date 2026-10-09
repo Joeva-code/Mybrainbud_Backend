@@ -9,7 +9,10 @@ export class ApiError extends Error {
     this.errors = errors;
     this.isOperational = true;
 
-    Object.setPrototypeOf(this, ApiError.prototype);
+    // Restore the prototype chain for the *actual* class being constructed so
+    // `instanceof` works for every subclass (e.g. new UnauthorizedError() instanceof
+    // UnauthorizedError === true).
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
@@ -46,5 +49,11 @@ export class ConflictError extends ApiError {
 export class ValidationError extends ApiError {
   constructor(message = "Validation failed", errors?: any[]) {
     super(message, 422, errors);
+  }
+}
+
+export class ServiceUnavailableError extends ApiError {
+  constructor(message = "Service temporarily unavailable") {
+    super(message, 503);
   }
 }

@@ -11,7 +11,13 @@ export const registerSchema = z.object({
     .regex(/[a-z]/, "Password must contain at least one lowercase letter")
     .regex(/[0-9]/, "Password must contain at least one number")
     .regex(/[^A-Za-z0-9]/, "Password must contain at least one special character"),
-  role: z.enum(["STUDENT", "PARENT", "TEACHER", "SCHOOL_ADMIN", "ADMIN"]).default("STUDENT"),
+  // Public registration may only create non-privileged roles. ADMIN and
+  // SCHOOL_ADMIN accounts require an explicitly authorized provisioning path.
+  role: z.enum(["STUDENT", "PARENT", "TEACHER"]).default("STUDENT"),
+  // The registration design includes a terms/consent checkbox.
+  acceptTerms: z
+    .boolean()
+    .refine((accepted) => accepted === true, "You must accept the terms and conditions"),
 });
 
 export const loginSchema = z.object({
@@ -19,8 +25,20 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
+// Refresh tokens may be supplied in the body (existing contract) or via the
+// httpOnly refreshToken cookie; the controller falls back to the cookie.
 export const refreshTokenSchema = z.object({
-  refreshToken: z.string().min(1, "Refresh token is required"),
+  refreshToken: z.string().min(1, "Refresh token is required").optional(),
+});
+
+export const verifyOtpSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  code: z.string().regex(/^\d{4}$/, "Verification code must be 4 digits"),
+});
+
+export const googleAuthSchema = z.object({
+  // Google Identity Services ID token ("credential" in the GIS response).
+  credential: z.string().min(1, "Google credential is required"),
 });
 
 export const changePasswordSchema = z.object({

@@ -1,6 +1,6 @@
 {
   "name": "mybrainbud-backend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "",
   "main": "dist/server.js",
   "scripts": {
@@ -29,6 +29,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
+    "google-auth-library": "^11.2.0",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.11.0",
@@ -63,3 +64,4 @@
     "typescript-eslint": "^8.68.0"
   }
 }
+

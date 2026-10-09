@@ -33,7 +33,7 @@ MyBrainBud is a REST API backend for an AI-powered Nigerian exam preparation pla
 
 ### API Version
 
-**Current Version: 1.0.0**
+**Current Version: 1.1.0**
 
 ### Base URLs
 
@@ -92,7 +92,34 @@ JWT_ACCESS_SECRET=your-jwt-access-secret-min-32-chars
 JWT_REFRESH_SECRET=your-jwt-refresh-secret-min-32-chars
 JWT_ACCESS_EXPIRES_IN=15m
 JWT_REFRESH_EXPIRES_IN=7d
+CORS_ORIGIN=http://localhost:3000
+
+# Google Sign-In (ID token audience validation for POST /api/auth/google)
+GOOGLE_CLIENT_ID=
+
+# Outbound delivery for OTP codes and password-reset emails
+# console (dev only) | webhook (production) | none
+EMAIL_DELIVERY_PROVIDER=console
+EMAIL_WEBHOOK_URL=
+EMAIL_WEBHOOK_TOKEN=
+
+# OTP policy (4-digit code fixed by design)
+OTP_EXPIRY_MINUTES=10
+OTP_RESEND_COOLDOWN_SECONDS=60
+OTP_MAX_ATTEMPTS=5
+OTP_MAX_RESENDS_PER_HOUR=5
+
+# Password reset policy
+RESET_TOKEN_EXPIRY_MINUTES=30
+RESET_TOKEN_MAX_ATTEMPTS=5
 ```
+
+> **Production note:** with `NODE_ENV=production` the `console` provider is
+> refused. Configure `EMAIL_DELIVERY_PROVIDER=webhook` + `EMAIL_WEBHOOK_URL`
+> (an endpoint that forwards to your email/SMS provider), otherwise
+> registration, resend, and forgot-password fail safely with `503` instead of
+> pretending a message was delivered. `CORS_ORIGIN` must be the exact frontend
+> origin so credentialed requests and the refresh cookie work.
 
 ### Running the Server
 
@@ -135,15 +162,24 @@ MyBrainBud uses **JWT (JSON Web Token)** authentication with access and refresh 
 │  User   │                              │    API      │
 └────┬────┘                              └──────┬──────┘
      │                                        │
-     │  POST /api/auth/register              │
-     │  or /api/auth/login                   │
+     │  POST /api/auth/register               │
+     │  { firstName, email, password,         │
+     │    acceptTerms: true }                 │
      │ ─────────────────────────────────────►
      │                                        │
-     │   {                                   │
-     │     accessToken: "eyJ...",            │
-     │     refreshToken: "eyJ...",           │
-     │     user: {...}                       │
-     │   }                                   │
+     │   201 { user,                          │
+     │     verification: {                    │
+     │       destination: "j***@example.com", │
+     │       expiresInSeconds: 600 } }        │
+     │   (no session yet — OTP was sent)      │
+     │ ◄─────────────────────────────────────
+     │                                        │
+     │  POST /api/auth/verify-otp             │
+     │  { email, code: "1234" }               │
+     │ ─────────────────────────────────────►
+     │                                        │  marks email verified
+     │   200 { accessToken, refreshToken,     │  creates session
+     │         user: {...} } + Set-Cookie     │
      │ ◄─────────────────────────────────────
      │                                        │
      │  GET /api/auth/me                     │
@@ -185,9 +221,15 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ### Session Management
 
 - Sessions are stored in the database with hashed refresh tokens
-- Each login/registration creates a new session
+- Login, successful OTP verification, and Google sign-in create a new session
+- Registration alone never creates a session — verification must complete first
+- Refresh tokens are rotated on every refresh; the old session is revoked
 - Sessions can be revoked individually (logout) or all at once (logout-all)
+- A successful password reset revokes all of the user's sessions
 - Sessions expire automatically based on refresh token expiry
+- Protected endpoints additionally require `user.isVerified === true`
+- The refresh cookie is `HttpOnly`, `SameSite=Strict`, `Path=/`, `Secure`
+  (production), with the same max-age as the refresh token (7d by default)
 
 ---
 
@@ -229,6 +271,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
   "lastName": "Doe",
   "email": "john.doe@example.com",
   "password": "SecurePass@123",
+  "acceptTerms": true,
   "role": "STUDENT"
 }
 ```
@@ -237,15 +280,19 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 |-------|------|----------|-------------|
 | firstName | string | Yes | 1-100 characters |
 | lastName | string | No | Max 100 characters |
-| email | string | Yes | Valid email format |
+| email | string | Yes | Valid email format; normalized to lowercase |
 | password | string | Yes | Min 8 chars, must contain uppercase, lowercase, number, special char |
-| role | enum | No | STUDENT, PARENT, TEACHER, SCHOOL_ADMIN, ADMIN (default: STUDENT) |
+| acceptTerms | boolean | Yes | Must be `true` (terms/consent checkbox) |
+| role | enum | No | STUDENT, PARENT, TEACHER only (default: STUDENT). ADMIN/SCHOOL_ADMIN cannot be created via public registration |
+
+> `confirmPassword` is a frontend concern and is not stored; unknown fields are
+> stripped by validation.
 
 **Response (201 Created):**
 ```json
 {
   "success": true,
-  "message": "Registration successful",
+  "message": "Registration successful. Please check your email for the verification code.",
   "data": {
     "user": {
       "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -256,12 +303,18 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
       "isVerified": false,
       "isActive": true
     },
-    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "expiresIn": 900
+    "verification": {
+      "destination": "j***@example.com",
+      "expiresInSeconds": 600,
+      "resendCooldownSeconds": 60
+    }
   }
 }
 ```
+
+> **No tokens are issued at registration.** Complete
+> `POST /api/auth/verify-otp` with the emailed 4-digit code to receive the
+> session. The code itself is never returned by the API.
 
 **Errors:**
 - `400` - Validation error
@@ -431,6 +484,233 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 - Revokes ALL sessions for the user
 - Clears refreshToken cookie
 
+#### POST /api/auth/verify-otp
+
+**Description:** Verify the registration OTP, mark the email verified, and receive the first authenticated session (access + refresh tokens).
+
+**Authentication:** None required
+
+**Rate Limit:** 10 requests per 15 minutes per IP
+
+**Request Body:**
+```json
+{
+  "email": "john.doe@example.com",
+  "code": "1234"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| email | string | Yes | Registered email (normalized to lowercase) |
+| code | string | Yes | Exactly 4 digits |
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Verification successful",
+  "data": {
+    "user": {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "john.doe@example.com",
+      "role": "STUDENT",
+      "isVerified": true,
+      "isActive": true
+    },
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": 900
+  }
+}
+```
+
+**Cookie:** Sets `refreshToken` as httpOnly cookie
+
+**Errors:**
+- `400` - Validation error (code is not 4 digits)
+- `401` - Invalid, expired, already-used, or attempt-exhausted code (single generic message)
+- `403` - Account inactive
+
+**Side Effects:**
+- Consumes the OTP challenge (single use)
+- Sets `user.isVerified = true`
+- Creates the authenticated session
+
+> The code is never returned by the API. Codes are stored only as HMAC-SHA256
+> hashes (peppered with `JWT_ACCESS_SECRET`). Every failure returns the same
+> `401` message so the state of the challenge is not leaked.
+
+---
+
+#### POST /api/auth/resend-otp
+
+**Description:** Resend the registration verification code.
+
+**Authentication:** None required
+
+**Rate Limit:** 5 requests per 15 minutes per IP (plus a 60s per-account cooldown and a 5-per-hour cap, enforced silently)
+
+**Request Body:**
+```json
+{
+  "email": "john.doe@example.com"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "If an account with that email exists, a verification code has been sent.",
+  "data": { "cooldownSeconds": 60 }
+}
+```
+
+**Errors:**
+- `400` - Validation error
+- `503` - Delivery provider not configured (fails safely; never pretends delivery)
+
+> The response is intentionally generic and identical whether or not the account
+> exists, so the endpoint cannot be used to discover registered emails. The
+> resend cooldown and hourly cap are enforced silently (no new code is issued),
+> and issuing a new code supersedes (deletes) the previous active code.
+
+---
+
+#### POST /api/auth/google
+
+**Description:** Sign in (or provision) an account using a Google Identity Services ID token.
+
+**Authentication:** None required
+
+**Rate Limit:** 10 requests per 15 minutes per IP
+
+**Request Body:**
+```json
+{
+  "credential": "eyJhbGciOiJSUzI1NiIsImtpZCI6..."
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| credential | string | Yes | Google ID token (the `credential` field from Google Identity Services) |
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Google sign-in successful",
+  "data": {
+    "user": {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "john.doe@example.com",
+      "role": "STUDENT",
+      "isVerified": true,
+      "isActive": true
+    },
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": 900
+  }
+}
+```
+
+**Cookie:** Sets `refreshToken` as httpOnly cookie
+
+**Errors:**
+- `400` - Validation error
+- `401` - Invalid Google credentials (signature, audience, issuer, or expiry failure) or unverified email
+- `403` - Email already has a password-based account (not taken over)
+- `409` - Account created concurrently by another request
+- `503` - `GOOGLE_CLIENT_ID` not configured
+
+> The ID token is verified server-side with `google-auth-library`: signature,
+> audience (`GOOGLE_CLIENT_ID`), issuer, and expiry are validated, and
+> `email_verified` must be true. Google **access tokens** are not accepted, and a
+> client-supplied email is never trusted. First-time sign-ins create a verified
+> `STUDENT` with a `StudentProfile`; existing Google accounts are signed in
+> without creating duplicates.
+
+---
+
+#### POST /api/auth/forgot-password
+
+**Description:** Request a single-use password reset token delivered by email.
+
+**Authentication:** None required
+
+**Rate Limit:** 5 requests per 15 minutes per IP
+
+**Request Body:**
+```json
+{
+  "email": "john.doe@example.com"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "If an account with that email exists, a password reset link has been sent."
+}
+```
+
+**Errors:**
+- `400` - Validation error
+- `503` - Delivery provider not configured
+
+> Always returns the same response whether or not the account exists (safe from
+> enumeration). Tokens are 256-bit random values stored only as SHA-256 hashes,
+> expire after 30 minutes, and are single-use. The token is delivered by email
+> only — it is never logged or returned in the response.
+
+---
+
+#### POST /api/auth/reset-password
+
+**Description:** Consume a reset token and set a new password.
+
+**Authentication:** None required
+
+**Rate Limit:** 5 requests per 15 minutes per IP
+
+**Request Body:**
+```json
+{
+  "token": "9f8c...reset-token...",
+  "password": "NewSecurePass@123"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| token | string | Yes | The reset token from the email |
+| password | string | Yes | New password (same strength policy as registration) |
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Password has been reset successfully. Please sign in with your new password."
+}
+```
+
+**Errors:**
+- `400` - Validation error or invalid/expired/reused token
+- `429` - Too many requests
+
+**Side Effects:**
+- Re-hashes the password with bcrypt (12 rounds)
+- Marks the reset token used (single use)
+- Revokes **all** of the user's active sessions
+
 ---
 
 ## 5. Error Handling
@@ -576,12 +856,17 @@ interface Session {
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | GET | /health | No | Health check |
-| POST | /api/auth/register | No | User registration |
+| POST | /api/auth/register | No | User registration (sends OTP) |
 | POST | /api/auth/login | No | User login |
-| POST | /api/auth/refresh | No | Refresh tokens |
+| POST | /api/auth/verify-otp | No | Verify registration OTP, issue first session |
+| POST | /api/auth/resend-otp | No | Resend registration OTP |
+| POST | /api/auth/google | No | Google sign-in via ID token |
+| POST | /api/auth/refresh | No | Refresh tokens (rotating) |
 | GET | /api/auth/me | Yes | Get current user |
 | POST | /api/auth/logout | Yes | Logout current session |
 | POST | /api/auth/logout-all | Yes | Logout all sessions |
+| POST | /api/auth/forgot-password | No | Request a password reset token |
+| POST | /api/auth/reset-password | No | Consume reset token, set new password |
 
 ### Partially Implemented
 
@@ -693,6 +978,11 @@ Authentication endpoints are protected by rate limiting:
 | POST /api/auth/login | 5 requests | 15 minutes |
 | POST /api/auth/register | 5 requests | 15 minutes |
 | POST /api/auth/refresh | 5 requests | 15 minutes |
+| POST /api/auth/verify-otp | 10 requests | 15 minutes |
+| POST /api/auth/resend-otp | 5 requests | 15 minutes |
+| POST /api/auth/google | 10 requests | 15 minutes |
+| POST /api/auth/forgot-password | 5 requests | 15 minutes |
+| POST /api/auth/reset-password | 5 requests | 15 minutes |
 
 ## Appendix C: Password Requirements
 
@@ -706,5 +996,5 @@ Passwords must meet ALL of the following criteria:
 
 ---
 
-*Document Version: 1.0.0*
-*Last Updated: 2026-08-29*
+*Document Version: 1.1.0*
+*Last Updated: 2026-10-09*

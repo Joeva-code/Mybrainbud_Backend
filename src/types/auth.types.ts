@@ -3,11 +3,36 @@ export interface RegisterDto {
   lastName?: string;
   email: string;
   password: string;
-  role?: "STUDENT" | "PARENT" | "TEACHER" | "SCHOOL_ADMIN" | "ADMIN";
+  /** Public registration may only create non-privileged roles. */
+  role?: "STUDENT" | "PARENT" | "TEACHER";
+  /** Must be true — the registration UI requires accepting the terms. */
+  acceptTerms: boolean;
 }
 
 export interface LoginDto {
   email: string;
+  password: string;
+}
+
+export interface VerifyOtpDto {
+  email: string;
+  code: string;
+}
+
+export interface ResendOtpDto {
+  email: string;
+}
+
+export interface GoogleAuthDto {
+  credential: string;
+}
+
+export interface ForgotPasswordDto {
+  email: string;
+}
+
+export interface ResetPasswordDto {
+  token: string;
   password: string;
 }
 
@@ -19,6 +44,20 @@ export interface UserProfile {
   role: string;
   isVerified: boolean;
   isActive: boolean;
+}
+
+/** Verification challenge details returned by registration (no secrets). */
+export interface VerificationChallenge {
+  /** Masked destination, e.g. "j***@example.com". */
+  destination: string;
+  expiresInSeconds: number;
+  resendCooldownSeconds: number;
+}
+
+/** Registration response — the account is created unverified; no session is issued. */
+export interface RegistrationResult {
+  user: UserProfile;
+  verification: VerificationChallenge;
 }
 
 export interface AuthResponse {

@@ -5,6 +5,18 @@ import { join } from "path";
 const envFile = process.env.NODE_ENV === "test" ? ".env.test" : ".env";
 config({ path: join(process.cwd(), envFile) });
 
+const isTestEnv = process.env.NODE_ENV === "test";
+
+// In test mode, fall back to safe dummy values so the automated test suite can
+// run without a reachable database or real secrets. These are never valid
+// credentials and are only applied when NODE_ENV === "test".
+const testDefaults: Record<string, string> = {
+  DATABASE_URL: "postgresql://test:test@localhost:5432/test",
+  JWT_ACCESS_SECRET: "test-access-secret-must-be-at-least-32-chars-long",
+  JWT_REFRESH_SECRET: "test-refresh-secret-must-be-at-least-32-chars-long",
+  PORT: "5000",
+};
+
 // Validate required environment variables
 const requiredEnvVars = [
   "DATABASE_URL",
@@ -15,8 +27,20 @@ const requiredEnvVars = [
 
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
-    throw new Error(`Missing required environment variable: ${envVar}`);
+    const fallback = isTestEnv ? testDefaults[envVar] : undefined;
+    if (fallback) {
+      process.env[envVar] = fallback;
+    } else {
+      throw new Error(`Missing required environment variable: ${envVar}`);
+    }
   }
+}
+
+function intFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = parseInt(raw, 10);
+  return Number.isNaN(parsed) || parsed <= 0 ? fallback : parsed;
 }
 
 export const env = {
@@ -34,4 +58,25 @@ export const env = {
   openaiApiKey: process.env.OPENAI_API_KEY,
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY,
   flutterwaveSecretKey: process.env.FLUTTERWAVE_SECRET_KEY,
+
+  // CORS (must be set to the exact frontend origin for credentialed requests/cookies)
+  corsOrigin: process.env.CORS_ORIGIN,
+
+  // Google Sign-In (Google Identity Services ID token verification)
+  googleClientId: process.env.GOOGLE_CLIENT_ID,
+
+  // Outbound message delivery ("console" | "webhook" | "none")
+  emailDeliveryProvider: (process.env.EMAIL_DELIVERY_PROVIDER || "console").toLowerCase(),
+  emailWebhookUrl: process.env.EMAIL_WEBHOOK_URL,
+  emailWebhookToken: process.env.EMAIL_WEBHOOK_TOKEN,
+
+  // OTP verification policy (a 4-digit code is fixed by the product design)
+  otpExpiryMinutes: intFromEnv("OTP_EXPIRY_MINUTES", 10),
+  otpResendCooldownSeconds: intFromEnv("OTP_RESEND_COOLDOWN_SECONDS", 60),
+  otpMaxAttempts: intFromEnv("OTP_MAX_ATTEMPTS", 5),
+  otpMaxResendsPerHour: intFromEnv("OTP_MAX_RESENDS_PER_HOUR", 5),
+
+  // Password reset policy
+  resetTokenExpiryMinutes: intFromEnv("RESET_TOKEN_EXPIRY_MINUTES", 30),
+  resetTokenMaxAttempts: intFromEnv("RESET_TOKEN_MAX_ATTEMPTS", 5),
 };

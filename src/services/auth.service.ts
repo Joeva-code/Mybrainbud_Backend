@@ -1,17 +1,51 @@
-import { PrismaClient, User } from "@prisma/client";
+import { OtpPurpose, Prisma, PrismaClient, User } from "@prisma/client";
 import bcrypt from "bcrypt";
 import jwt, { SignOptions } from "jsonwebtoken";
-import { v4 as uuidv4 } from "uuid";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { env } from "../config/env";
-import { UnauthorizedError, ConflictError, NotFoundError } from "../utils/errors";
-import { RegisterDto, LoginDto, AuthResponse, JwtPayload } from "../types/auth.types";
+import { AuthConstants } from "../constants";
+import {
+  UnauthorizedError,
+  ConflictError,
+  NotFoundError,
+  ForbiddenError,
+} from "../utils/errors";
+import {
+  RegisterDto,
+  LoginDto,
+  AuthResponse,
+  JwtPayload,
+  RegistrationResult,
+  UserProfile,
+  VerifyOtpDto,
+  ResendOtpDto,
+  GoogleAuthDto,
+} from "../types/auth.types";
+import { OtpService, ResendResult } from "./otp.service";
+import { ensureDeliveryConfigured } from "./delivery";
+import { GoogleVerifiedProfile, verifyGoogleIdToken } from "./google-auth.service";
+
+/** Masks an email for display, e.g. "john@example.com" -> "j***@example.com". */
+function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return "***";
+  return `${email.slice(0, 1)}***${email.slice(at)}`;
+}
+
+export interface AuthServiceDeps {
+  otpService?: OtpService;
+  verifyGoogleIdToken?: (idToken: string) => Promise<GoogleVerifiedProfile>;
+}
 
 export class AuthService {
   private prisma: PrismaClient;
+  private otpService: OtpService;
+  private verifyGoogle: (idToken: string) => Promise<GoogleVerifiedProfile>;
 
-  constructor(prisma: PrismaClient) {
+  constructor(prisma: PrismaClient, deps: AuthServiceDeps = {}) {
     this.prisma = prisma;
+    this.otpService = deps.otpService ?? new OtpService(prisma);
+    this.verifyGoogle = deps.verifyGoogleIdToken ?? verifyGoogleIdToken;
   }
 
   private generateAccessToken(payload: JwtPayload): string {
@@ -109,48 +143,96 @@ export class AuthService {
     return value * seconds[unit];
   }
 
-  async register(dto: RegisterDto): Promise<AuthResponse> {
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+  async register(dto: RegisterDto): Promise<RegistrationResult> {
+    // Fail fast (503) before touching the database when delivery is not
+    // configured for this environment.
+    ensureDeliveryConfigured();
+
+    const email = dto.email.trim().toLowerCase();
+    const existingUser = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
     });
 
     if (existingUser) {
       throw new ConflictError("User with this email already exists");
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 12);
+    const passwordHash = await bcrypt.hash(dto.password, AuthConstants.BCRYPT_ROUNDS);
 
-    const user = await this.prisma.user.create({
-      data: {
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        email: dto.email,
-        passwordHash,
-        role: dto.role || "STUDENT",
-        authProvider: "EMAIL",
-      },
-    });
+    // User + role-specific profile are created atomically so a partial
+    // failure can never leave orphaned records.
+    let user: User;
+    try {
+      user = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            firstName: dto.firstName.trim(),
+            lastName: dto.lastName ? dto.lastName.trim() : null,
+            email,
+            passwordHash,
+            role: dto.role || "STUDENT",
+            authProvider: "EMAIL",
+            isVerified: false,
+          },
+        });
 
-    if (user.role === "STUDENT") {
-      await this.prisma.studentProfile.create({
-        data: { userId: user.id },
+        if (created.role === "STUDENT") {
+          await tx.studentProfile.create({ data: { userId: created.id } });
+        } else if (created.role === "PARENT") {
+          await tx.parentProfile.create({ data: { userId: created.id } });
+        } else if (created.role === "TEACHER") {
+          await tx.teacherProfile.create({ data: { userId: created.id } });
+        }
+
+        return created;
       });
-    } else if (user.role === "PARENT") {
-      await this.prisma.parentProfile.create({
-        data: { userId: user.id },
-      });
-    } else if (user.role === "TEACHER") {
-      await this.prisma.teacherProfile.create({
-        data: { userId: user.id },
-      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        throw new ConflictError("User with this email already exists");
+      }
+      throw error;
     }
 
-    return this.createSession(user);
+    try {
+      const { expiresAt } = await this.otpService.issueAndSend(
+        user.id,
+        email,
+        OtpPurpose.REGISTRATION
+      );
+      return {
+        user: this.toUserProfile(user),
+        verification: {
+          destination: maskEmail(email),
+          expiresInSeconds: Math.max(
+            0,
+            Math.round((expiresAt.getTime() - Date.now()) / 1000)
+          ),
+          resendCooldownSeconds: env.otpResendCooldownSeconds,
+        },
+      };
+    } catch (error) {
+      // Never leave behind an account that cannot receive its verification
+      // code — the transaction rolled back for profile creation, so removing
+      // the user cascades away profiles and challenges.
+      try {
+        await this.prisma.user.delete({ where: { id: user.id } });
+      } catch {
+        console.error(
+          "[AuthService] Failed to clean up account after delivery failure"
+        );
+      }
+      throw error;
+    }
   }
 
   async login(dto: LoginDto): Promise<AuthResponse> {
-    const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+    const user = await this.prisma.user.findFirst({
+      where: {
+        email: { equals: dto.email.trim().toLowerCase(), mode: "insensitive" },
+      },
     });
 
     if (!user) {
@@ -171,6 +253,15 @@ export class AuthService {
       throw new UnauthorizedError("Invalid email or password");
     }
 
+    // Unverified accounts must complete OTP verification before a session
+    // is issued. Checked after the password to avoid leaking account state
+    // to unauthenticated callers.
+    if (!user.isVerified) {
+      throw new ForbiddenError(
+        "Account not verified. Please verify your email before signing in."
+      );
+    }
+
     await this.prisma.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date() },
@@ -179,8 +270,23 @@ export class AuthService {
     return this.createSession(user);
   }
 
-  async createSession(user: User): Promise<AuthResponse> {
-    const sessionId = uuidv4();
+  private toUserProfile(user: User): UserProfile {
+    return {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email ?? "",
+      role: user.role,
+      isVerified: user.isVerified,
+      isActive: user.isActive,
+    };
+  }
+
+  async createSession(
+    user: User,
+    client: Prisma.TransactionClient = this.prisma
+  ): Promise<AuthResponse> {
+    const sessionId = randomUUID();
 
     const accessTokenPayload: JwtPayload = {
       userId: user.id,
@@ -195,7 +301,7 @@ export class AuthService {
       sessionId,
     });
 
-    await this.prisma.session.create({
+    await client.session.create({
       data: {
         id: sessionId,
         userId: user.id,
@@ -205,19 +311,105 @@ export class AuthService {
     });
 
     return {
-      user: {
-        id: user.id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email!,
-        role: user.role,
-        isVerified: user.isVerified,
-        isActive: user.isActive,
-      },
+      user: this.toUserProfile(user),
       accessToken,
       refreshToken,
       expiresIn: this.getAccessTokenMaxAgeSeconds(),
     };
+  }
+
+  /**
+   * Verifies an OTP challenge and, only on success, marks the contact method
+   * verified and issues the first authenticated session — all atomically.
+   */
+  async verifyOtp(dto: VerifyOtpDto): Promise<AuthResponse> {
+    const destination = dto.email.trim().toLowerCase();
+
+    return this.prisma.$transaction(async (tx) => {
+      let user = await this.otpService.consumeCode(tx, {
+        destination,
+        purpose: OtpPurpose.REGISTRATION,
+        code: dto.code,
+      });
+
+      if (!user.isActive) {
+        throw new UnauthorizedError("Account is inactive. Please contact support.");
+      }
+
+      if (!user.isVerified) {
+        user = await tx.user.update({
+          where: { id: user.id },
+          data: { isVerified: true, lastLoginAt: new Date() },
+        });
+      }
+
+      return this.createSession(user, tx);
+    });
+  }
+
+  /** Requests a resend of the registration verification code (generic response). */
+  async resendOtp(dto: ResendOtpDto): Promise<ResendResult> {
+    return this.otpService.resend({ email: dto.email });
+  }
+
+  /**
+   * Signs in (or provisions) an account from a verified Google ID token.
+   * Existing password-based accounts are never silently linked or taken over.
+   */
+  async googleAuth(dto: GoogleAuthDto): Promise<AuthResponse> {
+    const profile = await this.verifyGoogle(dto.credential);
+    const email = profile.email.trim().toLowerCase();
+
+    const existing = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
+    });
+
+    if (existing) {
+      if (existing.authProvider !== "GOOGLE") {
+        throw new ForbiddenError(
+          "This email already has a password-based account. Please sign in with your email and password."
+        );
+      }
+      if (!existing.isActive) {
+        throw new UnauthorizedError("Account is inactive. Please contact support.");
+      }
+      await this.prisma.user.update({
+        where: { id: existing.id },
+        data: { lastLoginAt: new Date() },
+      });
+      return this.createSession(existing);
+    }
+
+    let user: User;
+    try {
+      user = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            email,
+            firstName: profile.firstName,
+            lastName: profile.lastName ?? null,
+            role: "STUDENT",
+            authProvider: "GOOGLE",
+            // Google only yields email_verified=true tokens (enforced by
+            // verifyGoogleIdToken), so the contact method is verified.
+            isVerified: true,
+            passwordHash: null,
+          },
+        });
+        await tx.studentProfile.create({ data: { userId: created.id } });
+        return created;
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        throw new ConflictError("User with this email already exists");
+      }
+      throw error;
+    }
+
+    return this.createSession(user);
   }
 
   async refreshToken(refreshToken: string): Promise<AuthResponse> {

@@ -6,7 +6,7 @@ const swaggerDefinition = {
   openapi: "3.0.3",
   info: {
     title: "MyBrainBud API",
-    version: "1.0.0",
+    version: "1.1.0",
     description:
       "REST API for MyBrainBud - AI-Powered Nigerian Exam Preparation Platform",
     contact: {
