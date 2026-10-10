@@ -74,3 +74,76 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleVerifi
 
   return pickGoogleProfile(payload);
 }
+
+/**
+ * Google OAuth 2.0 redirect (authorization-code) flow.
+ *
+ * Unlike the ID-token flow above, this is the classic "Sign in with Google"
+ * redirect: the browser is sent to Google's consent screen, Google redirects
+ * back to GOOGLE_CALLBACK_URL with a one-time `code`, and the server exchanges
+ * that code for tokens. The returned ID token is then verified exactly like
+ * `verifyGoogleIdToken`, so both flows share the same claim checks.
+ */
+
+/** Scopes requested during the authorization-code flow. */
+export const GOOGLE_OAUTH_SCOPES = ["openid", "email", "profile"];
+
+/** Lazily builds an OAuth2Client configured for the redirect flow. */
+export function createGoogleOAuthClient(): OAuth2Client {
+  if (!env.googleClientId || !env.googleClientSecret || !env.googleCallbackUrl) {
+    throw new ServiceUnavailableError("Google OAuth is not configured.");
+  }
+  return new OAuth2Client({
+    clientId: env.googleClientId,
+    clientSecret: env.googleClientSecret,
+    redirectUri: env.googleCallbackUrl,
+  });
+}
+
+/** Builds the Google consent-screen URL to redirect the browser to. */
+export function getGoogleAuthorizationUrl(state: string): string {
+  const client = createGoogleOAuthClient();
+  return client.generateAuthUrl({
+    access_type: "online",
+    scope: GOOGLE_OAUTH_SCOPES,
+    state,
+    // Always show the account chooser so users can switch accounts.
+    prompt: "select_account",
+  });
+}
+
+/**
+ * Exchanges an authorization code for tokens and returns the verified profile.
+ * The ID token is validated for signature, audience, issuer, and expiry; only
+ * verified-email payloads are accepted (via pickGoogleProfile).
+ */
+export async function exchangeGoogleCodeForProfile(
+  code: string
+): Promise<GoogleVerifiedProfile> {
+  const client = createGoogleOAuthClient();
+
+  let idToken: string | undefined;
+  try {
+    const { tokens } = await client.getToken(code);
+    idToken = tokens.id_token ?? undefined;
+  } catch {
+    throw new UnauthorizedError("Invalid Google authorization code");
+  }
+
+  if (!idToken) {
+    throw new UnauthorizedError("Invalid Google credentials");
+  }
+
+  let payload: GoogleIdPayload | undefined;
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: env.googleClientId,
+    });
+    payload = ticket.getPayload();
+  } catch {
+    throw new UnauthorizedError("Invalid Google credentials");
+  }
+
+  return pickGoogleProfile(payload);
+}

@@ -23,7 +23,11 @@ import {
 } from "../types/auth.types";
 import { OtpService, ResendResult } from "./otp.service";
 import { ensureDeliveryConfigured } from "./delivery";
-import { GoogleVerifiedProfile, verifyGoogleIdToken } from "./google-auth.service";
+import {
+  GoogleVerifiedProfile,
+  verifyGoogleIdToken,
+  exchangeGoogleCodeForProfile,
+} from "./google-auth.service";
 
 /** Masks an email for display, e.g. "john@example.com" -> "j***@example.com". */
 function maskEmail(email: string): string {
@@ -56,17 +60,20 @@ function resolveName(dto: RegisterDto): { firstName: string; lastName: string | 
 export interface AuthServiceDeps {
   otpService?: OtpService;
   verifyGoogleIdToken?: (idToken: string) => Promise<GoogleVerifiedProfile>;
+  exchangeGoogleCode?: (code: string) => Promise<GoogleVerifiedProfile>;
 }
 
 export class AuthService {
   private prisma: PrismaClient;
   private otpService: OtpService;
   private verifyGoogle: (idToken: string) => Promise<GoogleVerifiedProfile>;
+  private exchangeGoogleCode: (code: string) => Promise<GoogleVerifiedProfile>;
 
   constructor(prisma: PrismaClient, deps: AuthServiceDeps = {}) {
     this.prisma = prisma;
     this.otpService = deps.otpService ?? new OtpService(prisma);
     this.verifyGoogle = deps.verifyGoogleIdToken ?? verifyGoogleIdToken;
+    this.exchangeGoogleCode = deps.exchangeGoogleCode ?? exchangeGoogleCodeForProfile;
   }
 
   private generateAccessToken(payload: JwtPayload): string {
@@ -384,6 +391,25 @@ export class AuthService {
    */
   async googleAuth(dto: GoogleAuthDto): Promise<AuthResponse> {
     const profile = await this.verifyGoogle(dto.credential);
+    return this.signInWithGoogleProfile(profile);
+  }
+
+  /**
+   * Signs in (or provisions) an account from a Google OAuth 2.0 authorization
+   * code obtained via the redirect flow. The code is exchanged for an ID token
+   * which is verified exactly like the ID-token flow above.
+   */
+  async googleOAuth(code: string): Promise<AuthResponse> {
+    const profile = await this.exchangeGoogleCode(code);
+    return this.signInWithGoogleProfile(profile);
+  }
+
+  /**
+   * Shared provisioning/sign-in logic for any verified Google profile (from
+   * either the ID-token or authorization-code flow). Existing password-based
+   * accounts are never silently linked or taken over.
+   */
+  private async signInWithGoogleProfile(profile: GoogleVerifiedProfile): Promise<AuthResponse> {
     const email = profile.email.trim().toLowerCase();
 
     const existing = await this.prisma.user.findFirst({
@@ -417,7 +443,8 @@ export class AuthService {
             role: "STUDENT",
             authProvider: "GOOGLE",
             // Google only yields email_verified=true tokens (enforced by
-            // verifyGoogleIdToken), so the contact method is verified.
+            // verifyGoogleIdToken / exchangeGoogleCodeForProfile), so the
+            // contact method is verified.
             isVerified: true,
             passwordHash: null,
           },

@@ -9,6 +9,8 @@ import {
   verifyOtp,
   resendOtp,
   googleAuth,
+  googleOAuthInitiate,
+  googleOAuthCallback,
   forgotPassword,
   resetPassword,
 } from "../controllers/auth.controller";
@@ -46,6 +48,12 @@ router.post("/resend-otp", validate(emailSchema), resendOtp(authService));
 
 // Google sign-in (Google Identity Services ID token)
 router.post("/google", validate(googleAuthSchema), googleAuth(authService));
+
+// Google OAuth 2.0 redirect flow (authorization code)
+// GET /google        -> redirects the browser to Google's consent screen
+// GET /google/callback -> Google redirects back here with a one-time code
+router.get("/google", googleOAuthInitiate());
+router.get("/google/callback", googleOAuthCallback(authService));
 
 // Password reset
 router.post("/forgot-password", validate(forgotPasswordSchema), forgotPassword(passwordResetService));

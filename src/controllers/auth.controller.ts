@@ -1,9 +1,14 @@
 import { Request, Response, NextFunction } from "express";
 import { AuthService } from "../services/auth.service";
 import { PasswordResetService } from "../services/password-reset.service";
+import {
+  getGoogleAuthorizationUrl,
+} from "../services/google-auth.service";
 import { success, created } from "../utils/response";
-import { BadRequestError } from "../utils/errors";
+import { BadRequestError, UnauthorizedError } from "../utils/errors";
 import { AuthenticatedRequest } from "../middleware/auth.middleware";
+import { env } from "../config/env";
+import { randomBytes } from "node:crypto";
 import {
   RegisterDto,
   LoginDto,
@@ -15,6 +20,10 @@ import {
 } from "../types/auth.types";
 
 const isProduction = process.env.NODE_ENV === "production";
+
+/** Name of the short-lived cookie that carries the OAuth CSRF `state`. */
+const GOOGLE_OAUTH_STATE_COOKIE = "google_oauth_state";
+const OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 
 /** Shared attributes for the refresh-token cookie (HttpOnly + Strict + Secure in prod). */
 function refreshCookieOptions(maxAgeMs?: number): Record<string, unknown> {
@@ -107,6 +116,100 @@ export const googleAuth =
       return success(res, "Google sign-in successful", result);
     } catch (error) {
       next(error);
+    }
+  };
+
+/**
+ * Base origin used for post-OAuth browser redirects. Prefers an explicit
+ * FRONTEND_URL / CORS_ORIGIN, falling back to the local dev origin so the flow
+ * still works out of the box.
+ */
+function frontendOrigin(): string {
+  return (env.frontendUrl || "http://localhost:3000").replace(/\/+$/, "");
+}
+
+/** Resolves the success landing page (explicit override, or the SPA callback). */
+function googleSuccessRedirect(): string {
+  return env.googleOAuthSuccessRedirect || `${frontendOrigin()}/auth/callback`;
+}
+
+/** Resolves the failure landing page, appending a generic `error` flag. */
+function googleFailureRedirect(): string {
+  return env.googleOAuthFailureRedirect || `${frontendOrigin()}/login?error=google`;
+}
+
+/**
+ * GET /api/auth/google — begins the Google OAuth 2.0 redirect flow.
+ * Mints a random CSRF `state`, stores it in a short-lived HttpOnly cookie,
+ * and 302-redirects the browser to Google's consent screen.
+ */
+export const googleOAuthInitiate =
+  () => async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const state = randomBytes(32).toString("hex");
+      res.cookie(GOOGLE_OAUTH_STATE_COOKIE, state, {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: "lax", // must survive the top-level redirect back from Google
+        path: "/",
+        maxAge: OAUTH_STATE_MAX_AGE_MS,
+      });
+
+      const url = getGoogleAuthorizationUrl(state);
+      return res.redirect(url);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+/**
+ * GET /api/auth/google/callback — Google redirects here with a one-time `code`
+ * and the `state` we issued. We verify `state` (CSRF), exchange the code for a
+ * verified profile, create a session, set the refresh cookie, and redirect the
+ * browser to the frontend with the access token in the URL.
+ */
+export const googleOAuthCallback =
+  (service: AuthService) => async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
+      const expectedState = cookies?.[GOOGLE_OAUTH_STATE_COOKIE];
+      const state = typeof req.query.state === "string" ? req.query.state : undefined;
+
+      // Clear the state cookie regardless of outcome (single-use).
+      res.clearCookie(GOOGLE_OAUTH_STATE_COOKIE, {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: "lax",
+        path: "/",
+      });
+
+      // User denied consent on Google's screen.
+      if (typeof req.query.error === "string") {
+        return res.redirect(googleFailureRedirect());
+      }
+
+      if (!state || !expectedState || state !== expectedState) {
+        throw new UnauthorizedError("Invalid OAuth state");
+      }
+
+      const code = typeof req.query.code === "string" ? req.query.code : undefined;
+      if (!code) {
+        throw new BadRequestError("Missing authorization code");
+      }
+
+      const result = await service.googleOAuth(code);
+      setRefreshCookie(res, result.refreshToken, service);
+
+      // Hand the SPA the short-lived access token; the refresh token stays in
+      // the HttpOnly cookie set above.
+      const redirectUrl = new URL(googleSuccessRedirect());
+      redirectUrl.searchParams.set("accessToken", result.accessToken);
+      redirectUrl.searchParams.set("expiresIn", String(result.expiresIn));
+      return res.redirect(redirectUrl.toString());
+    } catch (error) {
+      // Redirect-based flows can't surface JSON errors to the user cleanly, so
+      // send the browser back to the frontend failure page instead.
+      return res.redirect(googleFailureRedirect());
     }
   };
 

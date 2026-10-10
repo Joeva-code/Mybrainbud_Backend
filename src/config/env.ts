@@ -65,6 +65,16 @@ export const env = {
   // Google Sign-In (Google Identity Services ID token verification)
   googleClientId: process.env.GOOGLE_CLIENT_ID,
 
+  // Google OAuth 2.0 redirect flow (authorization-code grant)
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  googleCallbackUrl: process.env.GOOGLE_CALLBACK_URL,
+
+  // Frontend origin for OAuth browser redirects (falls back to CORS_ORIGIN,
+  // then to a local dev origin). Overridable landing pages below take priority.
+  frontendUrl: process.env.FRONTEND_URL || process.env.CORS_ORIGIN,
+  googleOAuthSuccessRedirect: process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT,
+  googleOAuthFailureRedirect: process.env.GOOGLE_OAUTH_FAILURE_REDIRECT,
+
   // Outbound message delivery ("console" | "webhook" | "none")
   emailDeliveryProvider: (process.env.EMAIL_DELIVERY_PROVIDER || "console").toLowerCase(),
   emailWebhookUrl: process.env.EMAIL_WEBHOOK_URL,

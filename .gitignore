@@ -12,3 +12,6 @@ coverage/
 
 # Generated SQL schema (use prisma/schema.prisma as source of truth)
 init.sql
+.agents
+.claude
+.cursor
