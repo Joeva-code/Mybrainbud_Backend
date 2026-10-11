@@ -60,8 +60,9 @@ services:
         value: "MyBrainBud <verification@mybrainbud.com>"
       - key: SMTP_HOST
         value: smtp.gmail.com
+      # Use 465 (SSL) on Render free tier; 587 (STARTTLS) often blocked
       - key: SMTP_PORT
-        value: "587"
+        value: "465"
 
       # >>> EDIT THESE to your real frontend origin (no trailing slash) <<<
       # A wrong value breaks credentialed cookies and the Google login redirect.

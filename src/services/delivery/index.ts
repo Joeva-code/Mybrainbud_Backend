@@ -66,7 +66,7 @@ export function ensureDeliveryConfigured(): void {
  *
  * Uses Nodemailer with Gmail SMTP settings. Requires SMTP_HOST, SMTP_PORT,
  * SMTP_USER, SMTP_PASS, and EMAIL_FROM environment variables.
- * Uses STARTTLS on port 587 (secure: false).
+ * Supports both STARTTLS on port 587 (secure: false) and SSL on port 465 (secure: true).
  */
 class GmailSmtpDeliveryProvider implements DeliveryProvider {
   readonly name = "gmail";
@@ -80,18 +80,21 @@ class GmailSmtpDeliveryProvider implements DeliveryProvider {
     private readonly pass: string,
     private readonly from: string
   ) {
+    // Use SSL for port 465, STARTTLS for port 587
+    const useSSL = port === 465;
+
     this.transport = createTransport({
       host: this.host,
       port: this.port,
-      secure: false, // STARTTLS on port 587
+      secure: useSSL, // true for 465 (SSL), false for 587 (STARTTLS)
       auth: {
         user: this.user,
         pass: this.pass,
       },
-      // Connection timeout and socket timeout
-      connectionTimeout: 10000,
-      greetingTimeout: 5000,
-      socketTimeout: 10000,
+      // Increased timeouts for cloud environments
+      connectionTimeout: 30000,
+      greetingTimeout: 15000,
+      socketTimeout: 30000,
     });
 
     // Verify connection on startup (non-blocking)
