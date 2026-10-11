@@ -75,14 +75,15 @@ export const env = {
   googleOAuthSuccessRedirect: process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT,
   googleOAuthFailureRedirect: process.env.GOOGLE_OAUTH_FAILURE_REDIRECT,
 
-  // Outbound message delivery ("resend" | "console" | "webhook" | "none")
+  // Outbound message delivery ("gmail" | "console" | "none")
   emailDeliveryProvider: (process.env.EMAIL_DELIVERY_PROVIDER || "console").toLowerCase(),
-  emailWebhookUrl: process.env.EMAIL_WEBHOOK_URL,
-  emailWebhookToken: process.env.EMAIL_WEBHOOK_TOKEN,
 
-  // Resend (https://resend.com) transactional email provider.
-  // EMAIL_FROM may include a friendly name, e.g. "MyBrainBud <no-reply@mybrainbud.com>".
-  resendApiKey: process.env.RESEND_API_KEY,
+  // Gmail SMTP (https://support.google.com/accounts/answer/185833)
+  // SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM
+  smtpHost: process.env.SMTP_HOST,
+  smtpPort: intFromEnv("SMTP_PORT", 587),
+  smtpUser: process.env.SMTP_USER,
+  smtpPass: process.env.SMTP_PASS,
   emailFrom: process.env.EMAIL_FROM,
 
   // OTP verification policy (a 4-digit code is fixed by the product design)

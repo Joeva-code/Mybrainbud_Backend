@@ -1,4 +1,4 @@
-import { Resend } from "resend";
+import { createTransport, Transporter } from "nodemailer";
 import { env } from "../../config/env";
 import { ServiceUnavailableError } from "../../utils/errors";
 
@@ -7,17 +7,13 @@ import { ServiceUnavailableError } from "../../utils/errors";
  *
  * Delivery is pluggable behind this interface:
  *
- * - "resend"  — production email via the Resend SDK (https://resend.com). Uses
- *               RESEND_API_KEY to send and EMAIL_FROM as the sender. Fails
- *               safely (503) when unconfigured or when the API rejects a send.
+ * - "gmail"   — production email via Gmail SMTP. Uses SMTP_HOST, SMTP_PORT,
+ *               SMTP_USER, SMTP_PASS, EMAIL_FROM. Uses STARTTLS on port 587.
+ *               Fails safely (503) when unconfigured or when sending fails.
  * - "console" — development/test only. Prints the message to the server log.
- *                Refuses to run in production so we never pretend a message
- *                was delivered.
- * - "webhook" — production capable. POSTs { to, subject, text } as JSON to
- *                EMAIL_WEBHOOK_URL (optionally authenticated with
- *                EMAIL_WEBHOOK_TOKEN as a Bearer token), where an email/SMS
- *                provider integration can pick it up.
- * - "none"     — explicitly disables delivery; every send fails safely.
+ *               Refuses to run in production so we never pretend a message
+ *               was delivered.
+ * - "none"    — explicitly disables delivery; every send fails safely.
  *
  * When delivery is not configured, callers receive a 503 before any
  * account-dependent logic runs, so failures cannot be used to probe whether
@@ -28,6 +24,7 @@ export interface DeliveryMessage {
   to: string;
   subject: string;
   text: string;
+  html?: string;
 }
 
 export interface DeliveryProvider {
@@ -41,10 +38,10 @@ const DELIVERY_UNAVAILABLE_MESSAGE =
 /** Returns true when a delivery provider is configured for the current environment. */
 export function isDeliveryConfigured(): boolean {
   switch (env.emailDeliveryProvider) {
-    case "resend":
-      return Boolean(env.resendApiKey && env.emailFrom);
-    case "webhook":
-      return Boolean(env.emailWebhookUrl);
+    case "gmail":
+      return Boolean(
+        env.smtpHost && env.smtpPort && env.smtpUser && env.smtpPass && env.emailFrom
+      );
     case "console":
       // The console provider prints message bodies (including OTP codes), so
       // it must never be used in production.
@@ -65,45 +62,69 @@ export function ensureDeliveryConfigured(): void {
 }
 
 /**
- * Sends transactional email via the Resend SDK (https://resend.com).
+ * Sends transactional email via Gmail SMTP.
  *
- * The SDK returns a discriminated result: on success `error` is null and `data`
- * carries the message id; on failure `data` is null and `error` describes the
- * rejection. Any failure is surfaced as a generic 503 so callers never leak
- * provider internals to the client.
+ * Uses Nodemailer with Gmail SMTP settings. Requires SMTP_HOST, SMTP_PORT,
+ * SMTP_USER, SMTP_PASS, and EMAIL_FROM environment variables.
+ * Uses STARTTLS on port 587 (secure: false).
  */
-class ResendDeliveryProvider implements DeliveryProvider {
-  readonly name = "resend";
+class GmailSmtpDeliveryProvider implements DeliveryProvider {
+  readonly name = "gmail";
 
-  private readonly client: Resend;
+  private readonly transport: Transporter;
 
   constructor(
-    private readonly apiKey: string,
+    private readonly host: string,
+    private readonly port: number,
+    private readonly user: string,
+    private readonly pass: string,
     private readonly from: string
   ) {
-    this.client = new Resend(apiKey);
+    this.transport = createTransport({
+      host: this.host,
+      port: this.port,
+      secure: false, // STARTTLS on port 587
+      auth: {
+        user: this.user,
+        pass: this.pass,
+      },
+      // Connection timeout and socket timeout
+      connectionTimeout: 10000,
+      greetingTimeout: 5000,
+      socketTimeout: 10000,
+    });
+
+    // Verify connection on startup (non-blocking)
+    this.transport.verify().catch((err) => {
+      console.error("[Delivery:gmail] SMTP connection verification failed:", err.message);
+    });
   }
 
   async send(message: DeliveryMessage): Promise<void> {
     try {
-      const { data, error } = await this.client.emails.send({
+      const info = await this.transport.sendMail({
         from: this.from,
         to: message.to,
         subject: message.subject,
         text: message.text,
+        html: message.html,
       });
 
-      if (error || !data) {
-        // Log server-side for debugging without exposing details to the client.
-        console.error(
-          `[Delivery:resend] Send failed${error ? `: ${error.name} (status ${error.statusCode ?? "n/a"})` : ""}`
-        );
-        throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
-      }
+      const messageId = (info as { messageId?: string }).messageId ?? "unknown";
+      console.log(`[Delivery:gmail] Message sent: ${messageId}`);
     } catch (error) {
       if (error instanceof ServiceUnavailableError) throw error;
-      // Network/transport failures are reported the same generic way.
-      console.error("[Delivery:resend] Failed to reach the Resend API");
+      const err = error as Error & { code?: string; command?: string };
+      // Handle common SMTP errors
+      if (err.code === "EAUTH" || err.code === "EENVELOPE") {
+        console.error("[Delivery:gmail] Authentication failed or invalid sender:", err.message);
+      } else if (err.code === "ETIMEDOUT" || err.code === "ECONNECTION") {
+        console.error("[Delivery:gmail] Connection timeout:", err.message);
+      } else if (err.code === "EMESSAGE") {
+        console.error("[Delivery:gmail] Message rejected:", err.message);
+      } else {
+        console.error("[Delivery:gmail] Send failed:", err.message);
+      }
       throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
     }
   }
@@ -124,40 +145,6 @@ class ConsoleDeliveryProvider implements DeliveryProvider {
   }
 }
 
-class WebhookDeliveryProvider implements DeliveryProvider {
-  readonly name = "webhook";
-
-  constructor(
-    private readonly url: string,
-    private readonly token?: string
-  ) {}
-
-  async send(message: DeliveryMessage): Promise<void> {
-    try {
-      const response = await fetch(this.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-        },
-        body: JSON.stringify({
-          to: message.to,
-          subject: message.subject,
-          text: message.text,
-        }),
-      });
-      if (!response.ok) {
-        console.error(`[Delivery:webhook] Provider responded with status ${response.status}`);
-        throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
-      }
-    } catch (error) {
-      if (error instanceof ServiceUnavailableError) throw error;
-      console.error("[Delivery:webhook] Failed to reach delivery webhook");
-      throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
-    }
-  }
-}
-
 class NoneDeliveryProvider implements DeliveryProvider {
   readonly name = "none";
 
@@ -172,16 +159,17 @@ let cachedProvider: DeliveryProvider | null = null;
 export function getDeliveryProvider(): DeliveryProvider {
   if (cachedProvider) return cachedProvider;
   switch (env.emailDeliveryProvider) {
-    case "resend":
+    case "gmail":
       cachedProvider =
-        env.resendApiKey && env.emailFrom
-          ? new ResendDeliveryProvider(env.resendApiKey, env.emailFrom)
+        env.smtpHost && env.smtpPort && env.smtpUser && env.smtpPass && env.emailFrom
+          ? new GmailSmtpDeliveryProvider(
+              env.smtpHost,
+              env.smtpPort,
+              env.smtpUser,
+              env.smtpPass,
+              env.emailFrom
+            )
           : new NoneDeliveryProvider();
-      break;
-    case "webhook":
-      cachedProvider = env.emailWebhookUrl
-        ? new WebhookDeliveryProvider(env.emailWebhookUrl, env.emailWebhookToken)
-        : new NoneDeliveryProvider();
       break;
     case "console":
       cachedProvider = new ConsoleDeliveryProvider();
@@ -197,4 +185,3 @@ export function getDeliveryProvider(): DeliveryProvider {
 export function setDeliveryProvider(provider: DeliveryProvider | null): void {
   cachedProvider = provider;
 }
-

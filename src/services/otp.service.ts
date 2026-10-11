@@ -32,6 +32,91 @@ function hashesMatch(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+/**
+ * Generates a professional HTML email template for verification codes.
+ * Includes plain-text fallback.
+ */
+function generateVerificationEmail(
+  code: string,
+  expiryMinutes: number
+): { text: string; html: string } {
+  const text = `Your MyBrainBud verification code is: ${code}\n\n` +
+    `It expires in ${expiryMinutes} minutes. ` +
+    `If you did not request this code, you can safely ignore this message.`;
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MyBrainBud Verification Code</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f4;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: 0 auto; padding: 20px;">
+    <tr>
+      <td style="background-color: #ffffff; border-radius: 8px; padding: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <!-- Header -->
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+          <tr>
+            <td style="text-align: center; padding-bottom: 20px; border-bottom: 1px solid #e0e0e0;">
+              <h1 style="margin: 0; color: #1a1a2e; font-size: 24px; font-weight: 600;">MyBrainBud</h1>
+              <p style="margin: 8px 0 0; color: #666; font-size: 14px;">Email Verification</p>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Content -->
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding: 30px 0;">
+          <tr>
+            <td style="color: #333; font-size: 16px; line-height: 1.6;">
+              <p style="margin: 0 0 16px;">Hello,</p>
+              <p style="margin: 0 0 16px;">Thank you for signing up for MyBrainBud. Please use the verification code below to complete your registration:</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="text-align: center; padding: 20px 0;">
+              <div style="display: inline-block; background-color: #1a1a2e; color: #ffffff; padding: 16px 32px; border-radius: 8px; letter-spacing: 8px; font-size: 28px; font-weight: 700; font-family: 'Courier New', Courier, monospace;">
+                ${code}
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="color: #666; font-size: 14px; line-height: 1.6; text-align: center;">
+              <p style="margin: 0 0 8px;">This code expires in <strong>${expiryMinutes} minutes</strong>.</p>
+              <p style="margin: 0;">If you did not request this code, you can safely ignore this email.</p>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Security Notice -->
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top: 1px solid #e0e0e0; padding-top: 20px;">
+          <tr>
+            <td style="color: #888; font-size: 12px; line-height: 1.5; text-align: center;">
+              <p style="margin: 0 0 8px;"><strong>Security Notice:</strong> Never share this code with anyone. MyBrainBud will never ask for your verification code via phone, email, or any other channel.</p>
+              <p style="margin: 0;">If you're having trouble, please contact our support team.</p>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Footer -->
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding-top: 20px;">
+          <tr>
+            <td style="color: #999; font-size: 12px; text-align: center;">
+              <p style="margin: 0;">&copy; ${new Date().getFullYear()} MyBrainBud. All rights reserved.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  return { text, html };
+}
+
 export interface OtpIssueResult {
   expiresAt: Date;
   code?: string;
@@ -93,13 +178,12 @@ export class OtpService {
     });
 
     try {
+      const { text, html } = generateVerificationEmail(code, env.otpExpiryMinutes);
       await this.delivery.send({
         to: normalizedDestination,
         subject: "Your MyBrainBud verification code",
-        text:
-          `Your MyBrainBud verification code is: ${code}\n\n` +
-          `It expires in ${env.otpExpiryMinutes} minutes. ` +
-          `If you did not request this code, you can safely ignore this message.`,
+        text,
+        html,
       });
     } catch (error) {
       // Remove the undelivered challenge so it cannot be misused.
@@ -150,13 +234,12 @@ export class OtpService {
     });
 
     try {
+      const { text, html } = generateVerificationEmail(code, env.otpExpiryMinutes);
       await this.delivery.send({
         to: normalizedDestination,
         subject: "Your MyBrainBud verification code",
-        text:
-          `Your MyBrainBud verification code is: ${code}\n\n` +
-          `It expires in ${env.otpExpiryMinutes} minutes. ` +
-          `If you did not request this code, you can safely ignore this message.`,
+        text,
+        html,
       });
     } catch (error) {
       // Remove the undelivered challenge so it cannot be misused.
