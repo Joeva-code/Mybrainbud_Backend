@@ -1,4 +1,5 @@
 import { createTransport, Transporter } from "nodemailer";
+import { EmailParams, MailerSend, Recipient, Sender } from "mailersend";
 import { env } from "../../config/env";
 import { ServiceUnavailableError } from "../../utils/errors";
 
@@ -7,13 +8,17 @@ import { ServiceUnavailableError } from "../../utils/errors";
  *
  * Delivery is pluggable behind this interface:
  *
- * - "gmail"   — production email via Gmail SMTP. Uses SMTP_HOST, SMTP_PORT,
- *               SMTP_USER, SMTP_PASS, EMAIL_FROM. Uses STARTTLS on port 587.
- *               Fails safely (503) when unconfigured or when sending fails.
- * - "console" — development/test only. Prints the message to the server log.
- *               Refuses to run in production so we never pretend a message
- *               was delivered.
- * - "none"    — explicitly disables delivery; every send fails safely.
+ * - "mailersend" — production email via MailerSend HTTPS API. Uses
+ *                MAILERSEND_API_KEY and EMAIL_FROM. Works on Render Free
+ *                (no outbound SMTP ports required). Fails safely (503) when
+ *                unconfigured or when sending fails.
+ * - "gmail"      — production email via Gmail SMTP. Uses SMTP_HOST, SMTP_PORT,
+ *                  SMTP_USER, SMTP_PASS, EMAIL_FROM. Uses STARTTLS on port 587.
+ *                  Fails safely (503) when unconfigured or when sending fails.
+ * - "console"    — development/test only. Prints the message to the server log.
+ *                  Refuses to run in production so we never pretend a message
+ *                  was delivered.
+ * - "none"       — explicitly disables delivery; every send fails safely.
  *
  * When delivery is not configured, callers receive a 503 before any
  * account-dependent logic runs, so failures cannot be used to probe whether
@@ -38,6 +43,8 @@ const DELIVERY_UNAVAILABLE_MESSAGE =
 /** Returns true when a delivery provider is configured for the current environment. */
 export function isDeliveryConfigured(): boolean {
   switch (env.emailDeliveryProvider) {
+    case "mailersend":
+      return Boolean(env.mailersendApiKey && env.emailFrom);
     case "gmail":
       return Boolean(
         env.smtpHost && env.smtpPort && env.smtpUser && env.smtpPass && env.emailFrom
@@ -133,6 +140,58 @@ class GmailSmtpDeliveryProvider implements DeliveryProvider {
   }
 }
 
+/**
+ * Sends transactional email via MailerSend HTTPS API.
+ *
+ * Uses MailerSend SDK with API key. Requires MAILERSEND_API_KEY and
+ * EMAIL_FROM environment variables. Works on platforms that block outbound
+ * SMTP ports (e.g., Render Free tier) because it uses HTTPS.
+ */
+class MailerSendDeliveryProvider implements DeliveryProvider {
+  readonly name = "mailersend";
+
+  private readonly client: MailerSend;
+  private readonly from: Sender;
+
+  constructor(private readonly apiKey: string, private readonly fromEmail: string) {
+    this.client = new MailerSend({ apiKey: this.apiKey });
+    this.from = new Sender(this.fromEmail);
+  }
+
+  async send(message: DeliveryMessage): Promise<void> {
+    try {
+      const recipients = [new Recipient(message.to)];
+      const emailParams = new EmailParams()
+        .setFrom(this.from)
+        .setTo(recipients)
+        .setSubject(message.subject)
+        .setText(message.text)
+        .setHtml(message.html ?? message.text);
+
+      const result = await this.client.email.send(emailParams);
+      // MailerSend API response may have messageId in different formats
+      const messageId = (result as { messageId?: string; data?: { messageId?: string } }).messageId
+        ?? (result as { data?: { messageId?: string } }).data?.messageId
+        ?? "unknown";
+      console.log(`[Delivery:mailersend] Message sent: ${messageId}`);
+    } catch (error) {
+      if (error instanceof ServiceUnavailableError) throw error;
+      const err = error as Error & { response?: { status?: number; data?: unknown } };
+      // Handle MailerSend API errors
+      if (err.response?.status === 401) {
+        console.error("[Delivery:mailersend] Authentication failed: invalid API key");
+      } else if (err.response?.status === 422) {
+        console.error("[Delivery:mailersend] Validation error:", err.response.data);
+      } else if (err.response?.status && err.response.status >= 500) {
+        console.error("[Delivery:mailersend] MailerSend server error:", err.response.status);
+      } else {
+        console.error("[Delivery:mailersend] Send failed:", err.message);
+      }
+      throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
+    }
+  }
+}
+
 class ConsoleDeliveryProvider implements DeliveryProvider {
   readonly name = "console";
 
@@ -162,6 +221,12 @@ let cachedProvider: DeliveryProvider | null = null;
 export function getDeliveryProvider(): DeliveryProvider {
   if (cachedProvider) return cachedProvider;
   switch (env.emailDeliveryProvider) {
+    case "mailersend":
+      cachedProvider =
+        env.mailersendApiKey && env.emailFrom
+          ? new MailerSendDeliveryProvider(env.mailersendApiKey, env.emailFrom)
+          : new NoneDeliveryProvider();
+      break;
     case "gmail":
       cachedProvider =
         env.smtpHost && env.smtpPort && env.smtpUser && env.smtpPass && env.emailFrom
