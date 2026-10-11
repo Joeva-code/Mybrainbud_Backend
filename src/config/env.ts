@@ -75,16 +75,21 @@ export const env = {
   googleOAuthSuccessRedirect: process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT,
   googleOAuthFailureRedirect: process.env.GOOGLE_OAUTH_FAILURE_REDIRECT,
 
-  // Outbound message delivery ("gmail" | "console" | "none")
+  // Outbound message delivery ("resend" | "gmail" | "console" | "none")
   emailDeliveryProvider: (process.env.EMAIL_DELIVERY_PROVIDER || "console").toLowerCase(),
+
+  // Resend (https://resend.com) transactional email provider.
+  // RESEND_API_KEY from Resend dashboard. EMAIL_FROM must be a verified domain sender.
+  resendApiKey: process.env.RESEND_API_KEY,
+  emailFrom: process.env.EMAIL_FROM,
 
   // Gmail SMTP (https://support.google.com/accounts/answer/185833)
   // SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM
+  // Note: Render free tier blocks outbound SMTP; use Resend instead.
   smtpHost: process.env.SMTP_HOST,
   smtpPort: intFromEnv("SMTP_PORT", 587),
   smtpUser: process.env.SMTP_USER,
   smtpPass: process.env.SMTP_PASS,
-  emailFrom: process.env.EMAIL_FROM,
 
   // OTP verification policy (a 4-digit code is fixed by the product design)
   otpExpiryMinutes: intFromEnv("OTP_EXPIRY_MINUTES", 10),
