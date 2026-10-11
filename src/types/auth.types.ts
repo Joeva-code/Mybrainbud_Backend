@@ -28,6 +28,11 @@ export interface ResendOtpDto {
   email: string;
 }
 
+/** Continues an incomplete (unverified) email signup by re-issuing the OTP. */
+export interface ResumeSignupDto {
+  email: string;
+}
+
 export interface GoogleAuthDto {
   credential: string;
 }

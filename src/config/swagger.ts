@@ -48,8 +48,8 @@ const swaggerDefinition = {
         properties: {
           id: {
             type: "string",
-            format: "uuid",
-            example: "550e8400-e29b-41d4-a716-446655440000",
+            description: "Short app-generated user id (6-char base62)",
+            example: "aB3xQ9",
           },
           firstName: { type: "string", example: "John" },
           lastName: { type: "string", nullable: true, example: "Doe" },

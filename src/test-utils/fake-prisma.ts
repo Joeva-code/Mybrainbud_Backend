@@ -67,6 +67,11 @@ export class FakeDb {
   failTransaction = false;
   /** When true, user.create throws a P2002 unique-constraint error. */
   throwUniqueOnUserCreate = false;
+  /**
+   * When > 0, the next N user.create calls throw a P2002 that targets the
+   * primary key (`id`) — used to exercise the short-id collision retry.
+   */
+  throwIdCollisionTimes = 0;
 
   reset(): void {
     this.users = [];
@@ -76,6 +81,7 @@ export class FakeDb {
     this.profiles = [];
     this.failTransaction = false;
     this.throwUniqueOnUserCreate = false;
+    this.throwIdCollisionTimes = 0;
   }
 }
 
@@ -93,10 +99,11 @@ function matchesEmail(
 }
 
 export function createFakePrisma(db: FakeDb) {
-  const uniqueViolation = () =>
+  const uniqueViolation = (target?: string[]) =>
     new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
       code: "P2002",
       clientVersion: "5.19.1",
+      ...(target ? { meta: { target } } : {}),
     });
 
   const fake = {
@@ -115,6 +122,11 @@ export function createFakePrisma(db: FakeDb) {
       create: async (args: {
         data: Partial<FakeUserRow> & { firstName: string };
       }): Promise<FakeUserRow> => {
+        // Simulate a short-id primary-key collision for the next N creates.
+        if (db.throwIdCollisionTimes > 0) {
+          db.throwIdCollisionTimes -= 1;
+          throw uniqueViolation(["id"]);
+        }
         if (db.throwUniqueOnUserCreate) throw uniqueViolation();
         const email = args.data.email ?? null;
         if (email && db.users.some((u) => (u.email ?? "").toLowerCase() === email.toLowerCase())) {

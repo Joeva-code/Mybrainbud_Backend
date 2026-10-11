@@ -1,16 +1,19 @@
+import { Resend } from "resend";
 import { env } from "../../config/env";
 import { ServiceUnavailableError } from "../../utils/errors";
 
 /**
  * Outbound message delivery abstraction.
  *
- * No email/SMS provider dependency exists in this repository, so delivery is
- * pluggable behind this interface:
+ * Delivery is pluggable behind this interface:
  *
- * - "console"  — development/test only. Prints the message to the server log.
+ * - "resend"  — production email via the Resend SDK (https://resend.com). Uses
+ *               RESEND_API_KEY to send and EMAIL_FROM as the sender. Fails
+ *               safely (503) when unconfigured or when the API rejects a send.
+ * - "console" — development/test only. Prints the message to the server log.
  *                Refuses to run in production so we never pretend a message
  *                was delivered.
- * - "webhook"  — production capable. POSTs { to, subject, text } as JSON to
+ * - "webhook" — production capable. POSTs { to, subject, text } as JSON to
  *                EMAIL_WEBHOOK_URL (optionally authenticated with
  *                EMAIL_WEBHOOK_TOKEN as a Bearer token), where an email/SMS
  *                provider integration can pick it up.
@@ -38,6 +41,8 @@ const DELIVERY_UNAVAILABLE_MESSAGE =
 /** Returns true when a delivery provider is configured for the current environment. */
 export function isDeliveryConfigured(): boolean {
   switch (env.emailDeliveryProvider) {
+    case "resend":
+      return Boolean(env.resendApiKey && env.emailFrom);
     case "webhook":
       return Boolean(env.emailWebhookUrl);
     case "console":
@@ -56,6 +61,51 @@ export function isDeliveryConfigured(): boolean {
 export function ensureDeliveryConfigured(): void {
   if (!isDeliveryConfigured()) {
     throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
+  }
+}
+
+/**
+ * Sends transactional email via the Resend SDK (https://resend.com).
+ *
+ * The SDK returns a discriminated result: on success `error` is null and `data`
+ * carries the message id; on failure `data` is null and `error` describes the
+ * rejection. Any failure is surfaced as a generic 503 so callers never leak
+ * provider internals to the client.
+ */
+class ResendDeliveryProvider implements DeliveryProvider {
+  readonly name = "resend";
+
+  private readonly client: Resend;
+
+  constructor(
+    private readonly apiKey: string,
+    private readonly from: string
+  ) {
+    this.client = new Resend(apiKey);
+  }
+
+  async send(message: DeliveryMessage): Promise<void> {
+    try {
+      const { data, error } = await this.client.emails.send({
+        from: this.from,
+        to: message.to,
+        subject: message.subject,
+        text: message.text,
+      });
+
+      if (error || !data) {
+        // Log server-side for debugging without exposing details to the client.
+        console.error(
+          `[Delivery:resend] Send failed${error ? `: ${error.name} (status ${error.statusCode ?? "n/a"})` : ""}`
+        );
+        throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
+      }
+    } catch (error) {
+      if (error instanceof ServiceUnavailableError) throw error;
+      // Network/transport failures are reported the same generic way.
+      console.error("[Delivery:resend] Failed to reach the Resend API");
+      throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
+    }
   }
 }
 
@@ -122,6 +172,12 @@ let cachedProvider: DeliveryProvider | null = null;
 export function getDeliveryProvider(): DeliveryProvider {
   if (cachedProvider) return cachedProvider;
   switch (env.emailDeliveryProvider) {
+    case "resend":
+      cachedProvider =
+        env.resendApiKey && env.emailFrom
+          ? new ResendDeliveryProvider(env.resendApiKey, env.emailFrom)
+          : new NoneDeliveryProvider();
+      break;
     case "webhook":
       cachedProvider = env.emailWebhookUrl
         ? new WebhookDeliveryProvider(env.emailWebhookUrl, env.emailWebhookToken)

@@ -5,6 +5,50 @@ All notable changes to the MyBrainBud API will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **User IDs are now short, app-generated keys** (6-character base62:
+  `A-Z a-z 0-9`) instead of database-generated UUIDs. The `User.id` column
+  default was dropped (non-destructive migration — existing rows keep their
+  ids); the application now always supplies the id on account creation and
+  retries on the rare primary-key collision. Affects every `user.id` returned
+  by the API. `Session.id` remains a UUID.
+
+### Added
+
+- `POST /api/auth/resume-signup` — continue an incomplete email signup. A
+  signup is only complete once its registration OTP is verified; if a user
+  starts registering and leaves before verifying, this re-issues the code and
+  returns the same `verification` challenge shape as `register` so the client
+  can drop them back on the OTP screen. The response is enumeration-safe
+  (generic, identical whether or not a pending account exists) and never issues
+  a session — completion still happens via `POST /api/auth/verify-otp`.
+- `GET /api/auth/google` — starts the Google OAuth 2.0 **redirect**
+  (authorization-code) flow. Mints a CSRF `state` (stored in a short-lived
+  HttpOnly `google_oauth_state` cookie) and 302-redirects the browser to Google's
+  consent screen. Requires `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and
+  `GOOGLE_CALLBACK_URL`; returns `503` when unconfigured.
+- `GET /api/auth/google/callback` — completes the redirect flow. Validates
+  `state`, exchanges the one-time `code` for tokens, verifies the returned ID
+  token (signature/audience/issuer/expiry/`email_verified`), provisions or signs
+  in the account, sets the refresh cookie, and 302-redirects to the frontend
+  success page with `?accessToken=...&expiresIn=...` (failure redirects to the
+  frontend failure page).
+- New environment variables for the redirect flow and post-OAuth browser
+  redirects: `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL`, `FRONTEND_URL`, and
+  optional `GOOGLE_OAUTH_SUCCESS_REDIRECT` / `GOOGLE_OAUTH_FAILURE_REDIRECT`.
+
+### Notes
+
+- Google sign-in now supports **two** flows: the existing Google Identity
+  Services ID-token flow (`POST /api/auth/google`) and the new redirect flow
+  (`GET /api/auth/google` → `GET /api/auth/google/callback`). Both share the same
+  account provisioning/sign-in logic and never take over password-based accounts.
+- `GOOGLE_CALLBACK_URL` must exactly match an Authorized redirect URI on your
+  Google Cloud OAuth 2.0 client.
+
 ## [1.1.0] - 2026-10-09
 
 Authentication release aligning the API with the MyBrainBud Figma

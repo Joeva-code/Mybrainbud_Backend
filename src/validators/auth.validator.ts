@@ -99,3 +99,8 @@ export const resetPasswordSchema = z.object({
 export const emailSchema = z.object({
   email: z.string().email("Invalid email address"),
 });
+
+// Resuming an incomplete signup takes only the email the user started with.
+export const resumeSignupSchema = z.object({
+  email: z.string().email("Invalid email address"),
+});

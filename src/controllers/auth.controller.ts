@@ -14,6 +14,7 @@ import {
   LoginDto,
   VerifyOtpDto,
   ResendOtpDto,
+  ResumeSignupDto,
   GoogleAuthDto,
   ForgotPasswordDto,
   ResetPasswordDto,
@@ -99,6 +100,23 @@ export const resendOtp =
         res,
         "If an account with that email exists, a verification code has been sent.",
         { cooldownSeconds: result.cooldownSeconds }
+      );
+    } catch (error) {
+      next(error);
+    }
+  };
+
+export const resumeSignup =
+  (service: AuthService) => async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const dto: ResumeSignupDto = req.body;
+      const verification = await service.resumeSignup(dto);
+      // Generic message — never reveals whether a pending signup exists. The
+      // client uses `verification` to return the user to the OTP screen.
+      return success(
+        res,
+        "If you have an incomplete signup for that email, a new verification code has been sent.",
+        { verification }
       );
     } catch (error) {
       next(error);

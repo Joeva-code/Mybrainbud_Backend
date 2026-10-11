@@ -200,7 +200,10 @@ enum ContextCategory {
 // =============================================
 
 model User {
-  id           String        @id @default(uuid())
+  // Short, app-generated id (see src/utils/id.ts). No DB default — the
+  // application always supplies a unique 6-character base62 key and retries
+  // on the rare collision.
+  id           String        @id
   email        String?       @unique
   phone        String?       @unique
   passwordHash String?

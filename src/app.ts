@@ -56,6 +56,7 @@ app.use("/api/auth/login", createAuthRateLimiter());
 app.use("/api/auth/register", createAuthRateLimiter());
 app.use("/api/auth/refresh", createAuthRateLimiter());
 app.use("/api/auth/resend-otp", createAuthRateLimiter());
+app.use("/api/auth/resume-signup", createAuthRateLimiter());
 app.use("/api/auth/forgot-password", createAuthRateLimiter());
 app.use("/api/auth/reset-password", createAuthRateLimiter());
 app.use("/api/auth/verify-otp", otpVerifyRateLimiter);

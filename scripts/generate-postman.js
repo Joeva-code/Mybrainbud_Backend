@@ -71,8 +71,15 @@ const collection = {
       "- Registration returns NO tokens; verify the OTP first. The code is\n" +
       "  only delivered by email (never returned by the API). In development\n" +
       "  with EMAIL_DELIVERY_PROVIDER=console, read the code from the server log.\n" +
+      "- Left signup incomplete? POST /api/auth/resume-signup re-issues the code\n" +
+      "  so you can finish verification where you left off (then verify-otp).\n" +
       "- Rate limits: most endpoints 5 req / 15 min / IP; verify-otp and\n" +
-      "  google 10 req / 15 min / IP.",
+      "  google 10 req / 15 min / IP.\n" +
+      "- Google sign-in has two flows: POST /api/auth/google (ID token from\n" +
+      "  Google Identity Services) and the redirect flow GET /api/auth/google\n" +
+      "  -> GET /api/auth/google/callback (authorization code). The redirect\n" +
+      "  endpoints return 302s, so turn OFF 'Automatically follow redirects'\n" +
+      "  in Postman settings to inspect them.",
     schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
   },
   variable: [
@@ -144,6 +151,16 @@ authItems.push(
       "Rate limit: 5 req / 15 min / IP.\n\n" +
       "Responses: 200 (generic) | 400 (validation) | 503 (no delivery provider).",
     body: { email: "{{testEmail}}" },
+  }),
+  req("POST /api/auth/resume-signup", "POST", "/api/auth/resume-signup", {
+    desc:
+      "Continue an incomplete email signup.\n\n" +
+      "- A signup is only complete once its registration OTP is verified. If a user starts registering and leaves before verifying, this re-issues the code and returns the same `verification` challenge as register, so the client can drop them back on the OTP screen.\n" +
+      "- Enumeration-safe: the response is generic and identical whether or not a pending signup exists. No session is issued — finish with verify-otp.\n" +
+      "- Shares the 60s per-account cooldown and 5/hour cap with resend (enforced silently).\n\n" +
+      "Rate limit: 5 req / 15 min / IP.\n\n" +
+      "Responses: 200 (generic + verification) | 400 (validation) | 503 (no delivery provider).",
+    body: { email: "{{testEmail}}" },
   })
 );
 
@@ -158,9 +175,10 @@ authItems.push(
   }),
   req("POST /api/auth/google", "POST", "/api/auth/google", {
     desc:
-      "Sign in with a Google Identity Services ID token.\n\n" +
+      "Sign in with a Google Identity Services ID token (button/One-Tap flow).\n\n" +
       "- The credential is the ID token from Google Identity Services (the credential field in the GIS response). It is verified server-side (signature, audience, issuer, expiry, email_verified).\n" +
-      "- Existing password-based accounts are NOT taken over (403).\n\n" +
+      "- Existing password-based accounts are NOT taken over (403).\n" +
+      "- For the redirect/consent-screen flow, use GET /api/auth/google instead.\n\n" +
       "Rate limit: 10 req / 15 min / IP.\n\n" +
       "Responses: 200 | 400 | 401 (invalid token / unverified email) | 403 (password account exists) | 409 (race) | 503 (GOOGLE_CLIENT_ID not set).",
     body: { credential: "{{googleCredential}}" },
@@ -175,6 +193,34 @@ authItems.push(
       "Responses: 200 | 400 (missing token) | 401 (invalid/expired/revoked).",
     body: { refreshToken: "{{refreshToken}}" },
     test: captureTokens + "\npm.test('status is 200', () => pm.response.to.have.status(200));",
+  })
+);
+
+// Google OAuth 2.0 redirect (authorization-code) flow. These are browser
+// redirect endpoints, so in Postman turn OFF "Automatically follow redirects"
+// (Settings → General) to observe the 302 responses.
+authItems.push(
+  req("GET /api/auth/google", "GET", "/api/auth/google", {
+    desc:
+      "Begin the Google OAuth 2.0 redirect (authorization-code) flow.\n\n" +
+      "- Responds with a 302 redirect to Google's consent screen (Location header). A short-lived HttpOnly `google_oauth_state` cookie is set for CSRF protection.\n" +
+      "- Requires GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_CALLBACK_URL to be configured; otherwise 503.\n" +
+      "- Best exercised in a browser (it drives a full redirect round-trip).\n\n" +
+      "Rate limit: 10 req / 15 min / IP (shared with /google/callback and POST /google).\n\n" +
+      "Responses: 302 (redirect to Google) | 503 (Google OAuth not configured).",
+    test:
+      "pm.test('redirects to Google consent screen', () => pm.response.to.have.status(302));",
+  }),
+  req("GET /api/auth/google/callback", "GET", "/api/auth/google/callback", {
+    desc:
+      "Google redirects the browser here after consent with a one-time `code` and the `state` we issued.\n\n" +
+      "- The server validates `state` (CSRF), exchanges the `code` for a verified profile, creates a session, sets the refreshToken cookie, and 302-redirects to the frontend success page with `?accessToken=...&expiresIn=...`.\n" +
+      "- Normally called by Google, not manually. To test end-to-end, capture the real `code` + `state` from a consent round-trip and add them as query params (code, state).\n" +
+      "- On error (bad/expired state, denied consent, or code-exchange failure) the browser is redirected to the frontend failure page.\n\n" +
+      "Rate limit: 10 req / 15 min / IP (shared with /google).\n\n" +
+      "Responses: 302 (redirect to the frontend success or failure page).",
+    test:
+      "pm.test('handles the callback with a redirect', () => pm.expect([302, 303]).to.include(pm.response.code));",
   })
 );
 

@@ -103,8 +103,17 @@ JWT_ACCESS_EXPIRES_IN=15m
 JWT_REFRESH_EXPIRES_IN=7d
 CORS_ORIGIN=http://localhost:3000
 
-# Google Sign-In (ID token audience validation for POST /api/auth/google)
+# Google Sign-In
+# ID-token flow (POST /api/auth/google) needs the client id:
 GOOGLE_CLIENT_ID=
+# OAuth 2.0 redirect flow (GET /api/auth/google -> /google/callback) also needs:
+GOOGLE_CLIENT_SECRET=
+GOOGLE_CALLBACK_URL=https://api.example.com/api/auth/google/callback
+# Frontend origin used for post-OAuth browser redirects (falls back to CORS_ORIGIN)
+FRONTEND_URL=http://localhost:3000
+# Optional overrides for the post-flow landing pages (defaults shown)
+# GOOGLE_OAUTH_SUCCESS_REDIRECT=http://localhost:3000/auth/callback
+# GOOGLE_OAUTH_FAILURE_REDIRECT=http://localhost:3000/login?error=google
 
 # Outbound delivery for OTP codes and password-reset emails
 # console (dev only) | webhook (production) | none
@@ -584,6 +593,48 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 - `400` - Validation error
 - `503` - Delivery provider not configured (fails safely; never pretends delivery)
 
+---
+
+#### POST /api/auth/resume-signup
+
+**Description:** Continue an incomplete email signup. A signup is only **complete** once its registration OTP has been verified — until then the account exists but is unverified and holds no session. If a user starts registering and leaves before verifying, this endpoint re-issues the verification code and returns the same verification challenge shape as `register`, so the client can drop them straight back onto the OTP screen to finish where they left off.
+
+**Authentication:** None required
+
+**Rate Limit:** 5 requests per 15 minutes per IP (plus the same 60s per-account cooldown and 5-per-hour cap as resend, enforced silently)
+
+**Request Body:**
+```json
+{
+  "email": "john.doe@example.com"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "If you have an incomplete signup for that email, a new verification code has been sent.",
+  "data": {
+    "verification": {
+      "destination": "j***@example.com",
+      "expiresInSeconds": 600,
+      "resendCooldownSeconds": 60
+    }
+  }
+}
+```
+
+**Errors:**
+- `400` - Validation error
+- `503` - Delivery provider not configured (fails safely; never pretends delivery)
+
+> The response is intentionally generic and identical whether or not a pending
+> signup exists, so it cannot be used to enumerate accounts. The user object is
+> never returned and no session is issued — the account is completed only by
+> `POST /api/auth/verify-otp`, exactly like the initial registration. Resuming
+> simply re-sends the code; complete the flow with `verify-otp`.
+
 > The response is intentionally generic and identical whether or not the account
 > exists, so the endpoint cannot be used to discover registered emails. The
 > resend cooldown and hourly cap are enforced silently (no new code is issued),
@@ -647,6 +698,59 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 > client-supplied email is never trusted. First-time sign-ins create a verified
 > `STUDENT` with a `StudentProfile`; existing Google accounts are signed in
 > without creating duplicates.
+
+---
+
+#### GET /api/auth/google
+
+**Description:** Begin the Google OAuth 2.0 redirect (authorization-code) flow. Redirects the browser to Google's consent screen.
+
+**Authentication:** None required
+
+**Rate Limit:** 10 requests per 15 minutes per IP
+
+**Query Parameters:** None
+
+**Behavior:**
+1. Mints a random CSRF `state`, stores it in a short-lived (10-minute) HttpOnly `google_oauth_state` cookie, and includes it in the authorization request.
+2. Responds with a `302` redirect to Google's consent screen (`Location` header). Requested scopes: `openid`, `email`, `profile`.
+
+**Response (302 Found):** Redirects to `https://accounts.google.com/o/oauth2/v2/auth?...`.
+
+**Errors:**
+- `503` - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, or `GOOGLE_CALLBACK_URL` not configured
+
+> This endpoint is meant to be opened in a **browser** — it drives a full
+> redirect round-trip through Google. `GOOGLE_CALLBACK_URL` must exactly match an
+> Authorized redirect URI configured on your Google Cloud OAuth 2.0 client.
+
+---
+
+#### GET /api/auth/google/callback
+
+**Description:** Google redirects the browser here after the user consents (or denies). Completes the OAuth 2.0 redirect flow and issues a session.
+
+**Authentication:** None required (uses the `google_oauth_state` cookie + Google's `code`)
+
+**Rate Limit:** 10 requests per 15 minutes per IP
+
+**Query Parameters:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| code | string | Yes* | One-time authorization code from Google (*required on success) |
+| state | string | Yes | Must match the `google_oauth_state` cookie (CSRF check) |
+| error | string | No | Present when the user denied consent (e.g. `access_denied`) |
+
+**Behavior:**
+1. Validates `state` against the `google_oauth_state` cookie (single-use; cleared immediately).
+2. Exchanges the `code` for tokens and verifies the returned ID token exactly like the ID-token flow (signature, audience, issuer, expiry, `email_verified`).
+3. Creates a session (or provisions a verified `STUDENT` on first sign-in) and sets the `refreshToken` HttpOnly cookie.
+4. Redirects (`302`) to the frontend success page with `?accessToken=...&expiresIn=...`.
+
+**Response (302 Found):** Redirects to the frontend success page (`GOOGLE_OAUTH_SUCCESS_REDIRECT`, default `<FRONTEND_URL>/auth/callback`) with the access token in the query string. On failure — denied consent, invalid/expired `state`, or a code-exchange error — it redirects to the failure page (`GOOGLE_OAUTH_FAILURE_REDIRECT`, default `<FRONTEND_URL>/login?error=google`).
+
+**Errors:** Redirect-based failures do not return JSON; the browser is redirected to the frontend failure page instead.
 
 ---
 
@@ -794,7 +898,7 @@ All errors follow a consistent format:
 
 ```typescript
 interface User {
-  id: string;           // UUID
+  id: string;           // Short app-generated id (6-char base62), not a UUID
   email: string | null; // Unique
   phone: string | null; // Unique
   firstName: string;
@@ -808,6 +912,11 @@ interface User {
   updatedAt: Date;
 }
 ```
+
+> **User IDs** are short, human-friendly, app-generated keys (6 characters,
+> base62: `A-Z a-z 0-9`) rather than database UUIDs. The application generates
+> the id on account creation and retries on the rare collision. The `id` is a
+> primary key and is never derived from PII. (The `Session.id` remains a UUID.)
 
 ### Profile Relationships
 
@@ -871,7 +980,10 @@ interface Session {
 | POST | /api/auth/login | No | User login |
 | POST | /api/auth/verify-otp | No | Verify registration OTP, issue first session |
 | POST | /api/auth/resend-otp | No | Resend registration OTP |
+| POST | /api/auth/resume-signup | No | Continue an incomplete signup (re-issue OTP) |
 | POST | /api/auth/google | No | Google sign-in via ID token |
+| GET | /api/auth/google | No | Start Google OAuth 2.0 redirect flow |
+| GET | /api/auth/google/callback | No | Complete Google OAuth 2.0 redirect flow |
 | POST | /api/auth/refresh | No | Refresh tokens (rotating) |
 | GET | /api/auth/me | Yes | Get current user |
 | POST | /api/auth/logout | Yes | Logout current session |
@@ -991,7 +1103,10 @@ Authentication endpoints are protected by rate limiting:
 | POST /api/auth/refresh | 5 requests | 15 minutes |
 | POST /api/auth/verify-otp | 10 requests | 15 minutes |
 | POST /api/auth/resend-otp | 5 requests | 15 minutes |
+| POST /api/auth/resume-signup | 5 requests | 15 minutes |
 | POST /api/auth/google | 10 requests | 15 minutes |
+| GET /api/auth/google | 10 requests | 15 minutes |
+| GET /api/auth/google/callback | 10 requests | 15 minutes |
 | POST /api/auth/forgot-password | 5 requests | 15 minutes |
 | POST /api/auth/reset-password | 5 requests | 15 minutes |
 

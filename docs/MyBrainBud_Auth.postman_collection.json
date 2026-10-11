@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "MyBrainBud Authentication API",
-    "description": "Authentication endpoints for the MyBrainBud backend (v1.1.0).\n\nCovers the registration -> OTP verification -> session journey, login, Google sign-in, password reset, and session management.\n\nSETUP:\n1. Set `baseUrl` (defaults to http://localhost:5000).\n2. Start the server (npm start) and run the Prisma migration.\n3. Run the requests in order inside the 'Authentication' folder.\n   The access/refresh tokens are captured automatically after\n   register, verify-otp, login, google, and refresh, so /me, logout\n   and logout-all work without manual copy/paste.\n\nNOTES:\n- The refresh token is also set as an HttpOnly cookie by the server.\n  For cookie-based testing, use Postman's cookie jar / a browser.\n- Registration returns NO tokens; verify the OTP first. The code is\n  only delivered by email (never returned by the API). In development\n  with EMAIL_DELIVERY_PROVIDER=console, read the code from the server log.\n- Rate limits: most endpoints 5 req / 15 min / IP; verify-otp and\n  google 10 req / 15 min / IP.",
+    "description": "Authentication endpoints for the MyBrainBud backend (v1.1.0).\n\nCovers the registration -> OTP verification -> session journey, login, Google sign-in, password reset, and session management.\n\nSETUP:\n1. Set `baseUrl` (defaults to http://localhost:5000).\n2. Start the server (npm start) and run the Prisma migration.\n3. Run the requests in order inside the 'Authentication' folder.\n   The access/refresh tokens are captured automatically after\n   register, verify-otp, login, google, and refresh, so /me, logout\n   and logout-all work without manual copy/paste.\n\nNOTES:\n- The refresh token is also set as an HttpOnly cookie by the server.\n  For cookie-based testing, use Postman's cookie jar / a browser.\n- Registration returns NO tokens; verify the OTP first. The code is\n  only delivered by email (never returned by the API). In development\n  with EMAIL_DELIVERY_PROVIDER=console, read the code from the server log.\n- Left signup incomplete? POST /api/auth/resume-signup re-issues the code\n  so you can finish verification where you left off (then verify-otp).\n- Rate limits: most endpoints 5 req / 15 min / IP; verify-otp and\n  google 10 req / 15 min / IP.\n- Google sign-in has two flows: POST /api/auth/google (ID token from\n  Google Identity Services) and the redirect flow GET /api/auth/google\n  -> GET /api/auth/google/callback (authorization code). The redirect\n  endpoints return 302s, so turn OFF 'Automatically follow redirects'\n  in Postman settings to inspect them.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -216,6 +216,39 @@
           }
         },
         {
+          "name": "POST /api/auth/resume-signup",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/resume-signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "resume-signup"
+              ]
+            },
+            "description": "Continue an incomplete email signup.\n\n- A signup is only complete once its registration OTP is verified. If a user starts registering and leaves before verifying, this re-issues the code and returns the same `verification` challenge as register, so the client can drop them back on the OTP screen.\n- Enumeration-safe: the response is generic and identical whether or not a pending signup exists. No session is issued — finish with verify-otp.\n- Shares the 60s per-account cooldown and 5/hour cap with resend (enforced silently).\n\nRate limit: 5 req / 15 min / IP.\n\nResponses: 200 (generic + verification) | 400 (validation) | 503 (no delivery provider).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
           "name": "POST /api/auth/login",
           "request": {
             "method": "POST",
@@ -288,7 +321,7 @@
                 "google"
               ]
             },
-            "description": "Sign in with a Google Identity Services ID token.\n\n- The credential is the ID token from Google Identity Services (the credential field in the GIS response). It is verified server-side (signature, audience, issuer, expiry, email_verified).\n- Existing password-based accounts are NOT taken over (403).\n\nRate limit: 10 req / 15 min / IP.\n\nResponses: 200 | 400 | 401 (invalid token / unverified email) | 403 (password account exists) | 409 (race) | 503 (GOOGLE_CLIENT_ID not set).",
+            "description": "Sign in with a Google Identity Services ID token (button/One-Tap flow).\n\n- The credential is the ID token from Google Identity Services (the credential field in the GIS response). It is verified server-side (signature, audience, issuer, expiry, email_verified).\n- Existing password-based accounts are NOT taken over (403).\n- For the redirect/consent-screen flow, use GET /api/auth/google instead.\n\nRate limit: 10 req / 15 min / IP.\n\nResponses: 200 | 400 | 401 (invalid token / unverified email) | 403 (password account exists) | 409 (race) | 503 (GOOGLE_CLIENT_ID not set).",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"credential\": \"{{googleCredential}}\"\n}",
@@ -365,6 +398,77 @@
                   "  }",
                   "}",
                   "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/auth/google",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/google",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "google"
+              ]
+            },
+            "description": "Begin the Google OAuth 2.0 redirect (authorization-code) flow.\n\n- Responds with a 302 redirect to Google's consent screen (Location header). A short-lived HttpOnly `google_oauth_state` cookie is set for CSRF protection.\n- Requires GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_CALLBACK_URL to be configured; otherwise 503.\n- Best exercised in a browser (it drives a full redirect round-trip).\n\nRate limit: 10 req / 15 min / IP (shared with /google/callback and POST /google).\n\nResponses: 302 (redirect to Google) | 503 (Google OAuth not configured)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('redirects to Google consent screen', () => pm.response.to.have.status(302));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/auth/google/callback",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/google/callback",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "google",
+                "callback"
+              ]
+            },
+            "description": "Google redirects the browser here after consent with a one-time `code` and the `state` we issued.\n\n- The server validates `state` (CSRF), exchanges the `code` for a verified profile, creates a session, sets the refreshToken cookie, and 302-redirects to the frontend success page with `?accessToken=...&expiresIn=...`.\n- Normally called by Google, not manually. To test end-to-end, capture the real `code` + `state` from a consent round-trip and add them as query params (code, state).\n- On error (bad/expired state, denied consent, or code-exchange failure) the browser is redirected to the frontend failure page.\n\nRate limit: 10 req / 15 min / IP (shared with /google).\n\nResponses: 302 (redirect to the frontend success or failure page)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handles the callback with a redirect', () => pm.expect([302, 303]).to.include(pm.response.code));"
                 ]
               }
             }

@@ -8,6 +8,7 @@ import {
   getMe,
   verifyOtp,
   resendOtp,
+  resumeSignup,
   googleAuth,
   googleOAuthInitiate,
   googleOAuthCallback,
@@ -19,6 +20,7 @@ import {
   loginSchema,
   refreshTokenSchema,
   verifyOtpSchema,
+  resumeSignupSchema,
   googleAuthSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
@@ -45,6 +47,10 @@ router.post("/refresh", validate(refreshTokenSchema), refreshToken(authService))
 router.post("/verify-otp", validate(verifyOtpSchema), verifyOtp(authService));
 
 router.post("/resend-otp", validate(emailSchema), resendOtp(authService));
+
+// Continue an incomplete (unverified) email signup — re-issues the OTP so the
+// user can finish verification where they left off.
+router.post("/resume-signup", validate(resumeSignupSchema), resumeSignup(authService));
 
 // Google sign-in (Google Identity Services ID token)
 router.post("/google", validate(googleAuthSchema), googleAuth(authService));

@@ -217,6 +217,232 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /api/auth/resume-signup:
+    post:
+      summary: Continue an incomplete signup
+      description: |
+        Continues an incomplete email signup. A signup is only complete once its
+        registration OTP has been verified; if a user starts registering and
+        leaves before verifying, this re-issues the code and returns the same
+        `verification` challenge shape as register so the client can drop them
+        back on the OTP screen.
+
+        The response is enumeration-safe (generic and identical whether or not a
+        pending signup exists) and never issues a session — the account is
+        completed only by `POST /api/auth/verify-otp`.
+      operationId: resumeSignup
+      tags:
+        - Auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+            example:
+              email: john.doe@example.com
+      responses:
+        '200':
+          description: If a pending signup exists, a new code has been sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      verification:
+                        type: object
+                        properties:
+                          destination:
+                            type: string
+                            example: j***@example.com
+                          expiresInSeconds:
+                            type: integer
+                            example: 600
+                          resendCooldownSeconds:
+                            type: integer
+                            example: 60
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '503':
+          description: Delivery provider not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/google:
+    post:
+      summary: Sign in with Google (ID token)
+      description: |
+        Signs in (or provisions) an account using a Google Identity Services ID
+        token. The token is verified server-side (signature, audience, issuer,
+        expiry, and `email_verified`). Existing password-based accounts are not
+        taken over.
+      operationId: googleAuth
+      tags:
+        - Auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - credential
+              properties:
+                credential:
+                  type: string
+                  description: Google Identity Services ID token (the `credential` field)
+            example:
+              credential: eyJhbGciOiJSUzI1NiIsImtpZCI6...
+      responses:
+        '200':
+          description: Google sign-in successful
+          headers:
+            Set-Cookie:
+              description: HttpOnly refreshToken cookie
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Invalid Google credentials or unverified email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Email already has a password-based account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Account created concurrently by another request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: GOOGLE_CLIENT_ID not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: Start Google OAuth 2.0 redirect flow
+      description: |
+        Begins the Google OAuth 2.0 authorization-code (redirect) flow. Mints a
+        random CSRF `state`, stores it in a short-lived HttpOnly
+        `google_oauth_state` cookie, and redirects the browser to Google's
+        consent screen.
+
+        Requires `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and
+        `GOOGLE_CALLBACK_URL` to be configured. `GOOGLE_CALLBACK_URL` must match
+        an Authorized redirect URI on your Google Cloud OAuth 2.0 client. Best
+        exercised in a browser (it drives a full redirect round-trip).
+      operationId: googleOAuthInitiate
+      tags:
+        - Auth
+      security: []
+      responses:
+        '302':
+          description: Redirect to Google's consent screen
+          headers:
+            Location:
+              description: Google OAuth consent URL
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              description: Short-lived HttpOnly google_oauth_state cookie (CSRF)
+              schema:
+                type: string
+        '503':
+          description: Google OAuth not configured (missing client id/secret/callback)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/google/callback:
+    get:
+      summary: Complete Google OAuth 2.0 redirect flow
+      description: |
+        Google redirects the browser here after consent with a one-time `code`
+        and the `state` we issued. Validates `state` (CSRF), exchanges the `code`
+        for tokens, verifies the returned ID token, provisions or signs in the
+        account, sets the refresh cookie, and redirects to the frontend success
+        page with `?accessToken=...&expiresIn=...`.
+
+        On failure (denied consent, invalid/expired `state`, or code-exchange
+        error) the browser is redirected to the frontend failure page instead of
+        returning a JSON error.
+      operationId: googleOAuthCallback
+      tags:
+        - Auth
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: One-time authorization code from Google (present on success)
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          description: Must match the google_oauth_state cookie (CSRF check)
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          description: Present when the user denied consent (e.g. access_denied)
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to the frontend success or failure page
+          headers:
+            Location:
+              description: Frontend landing page (with accessToken on success)
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              description: HttpOnly refreshToken cookie (on success)
+              schema:
+                type: string
+
   /api/auth/me:
     get:
       summary: Get current user
@@ -431,9 +657,8 @@ components:
       properties:
         id:
           type: string
-          format: uuid
-          description: Unique user identifier
-          example: 550e8400-e29b-41d4-a716-446655440000
+          description: Short app-generated user id (6-char base62)
+          example: aB3xQ9
         firstName:
           type: string
           example: John

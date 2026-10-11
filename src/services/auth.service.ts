@@ -19,6 +19,7 @@ import {
   UserProfile,
   VerifyOtpDto,
   ResendOtpDto,
+  ResumeSignupDto,
   GoogleAuthDto,
 } from "../types/auth.types";
 import { OtpService, ResendResult } from "./otp.service";
@@ -28,6 +29,7 @@ import {
   verifyGoogleIdToken,
   exchangeGoogleCodeForProfile,
 } from "./google-auth.service";
+import { generateUserId, isPrimaryKeyCollision } from "../utils/id";
 
 /** Masks an email for display, e.g. "john@example.com" -> "j***@example.com". */
 function maskEmail(email: string): string {
@@ -171,6 +173,41 @@ export class AuthService {
     return value * seconds[unit];
   }
 
+  /**
+   * Creates a user row with an app-generated short id, retrying on the rare
+   * primary-key collision. The optional `onCreated` callback runs inside the
+   * same transaction (used to create the role-specific profile atomically).
+   *
+   * A 6-char id has a very large but finite keyspace, so a collision is
+   * possible; we simply generate a fresh id and retry rather than failing.
+   */
+  private async createUser(
+    data: Omit<Prisma.UserUncheckedCreateInput, "id">,
+    onCreated?: (tx: Prisma.TransactionClient, userId: string) => Promise<void>
+  ): Promise<User> {
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const created = await tx.user.create({
+            data: { ...data, id: generateUserId() },
+          });
+          if (onCreated) await onCreated(tx, created.id);
+          return created;
+        });
+      } catch (error) {
+        // A collision on the generated id is expected occasionally — retry
+        // with a fresh id. Anything else (e.g. duplicate email) propagates.
+        if (isPrimaryKeyCollision(error) && attempt < MAX_ATTEMPTS) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    // Unreachable: the loop either returns or throws.
+    throw new Error("Failed to generate a unique user id");
+  }
+
   async register(dto: RegisterDto): Promise<RegistrationResult> {
     // Fail fast (503) before touching the database when delivery is not
     // configured for this environment.
@@ -193,32 +230,31 @@ export class AuthService {
     const { firstName, lastName } = resolveName(dto);
 
     // User + role-specific profile are created atomically so a partial
-    // failure can never leave orphaned records.
+    // failure can never leave orphaned records. The id is app-generated and
+    // short (see createUser), retrying on the rare collision.
     let user: User;
     try {
-      user = await this.prisma.$transaction(async (tx) => {
-        const created = await tx.user.create({
-          data: {
-            firstName,
-            lastName,
-            email,
-            passwordHash,
-            role: dto.role || "STUDENT",
-            authProvider: "EMAIL",
-            isVerified: false,
-          },
-        });
-
-        if (created.role === "STUDENT") {
-          await tx.studentProfile.create({ data: { userId: created.id } });
-        } else if (created.role === "PARENT") {
-          await tx.parentProfile.create({ data: { userId: created.id } });
-        } else if (created.role === "TEACHER") {
-          await tx.teacherProfile.create({ data: { userId: created.id } });
+      const role = dto.role || "STUDENT";
+      user = await this.createUser(
+        {
+          firstName,
+          lastName,
+          email,
+          passwordHash,
+          role,
+          authProvider: "EMAIL",
+          isVerified: false,
+        },
+        async (tx, userId) => {
+          if (role === "STUDENT") {
+            await tx.studentProfile.create({ data: { userId } });
+          } else if (role === "PARENT") {
+            await tx.parentProfile.create({ data: { userId } });
+          } else if (role === "TEACHER") {
+            await tx.teacherProfile.create({ data: { userId } });
+          }
         }
-
-        return created;
-      });
+      );
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -386,6 +422,49 @@ export class AuthService {
   }
 
   /**
+   * Continues an incomplete email signup.
+   *
+   * A signup is only "complete" once its registration OTP has been verified
+   * (see `register`/`verifyOtp`). If a user starts registering and leaves
+   * before verifying, this lets them pick up where they left off: it re-issues
+   * the registration code and returns the same verification challenge shape as
+   * `register`, so the client can drop the user straight back onto the OTP
+   * screen. The response is intentionally generic — identical whether or not a
+   * pending account exists — so it cannot be used to enumerate accounts. The
+   * user object is never returned; verification must complete before a session
+   * is issued.
+   */
+  async resumeSignup(dto: ResumeSignupDto): Promise<RegistrationResult["verification"]> {
+    // Fail fast (503) before touching the database when delivery is not
+    // configured, mirroring register/resend so all three behave identically.
+    ensureDeliveryConfigured();
+
+    const email = dto.email.trim().toLowerCase();
+
+    // resend() is enumeration-safe: it only acts on an existing, unverified,
+    // active EMAIL account and silently enforces the cooldown/hourly cap. A
+    // fresh challenge supersedes any previous active code.
+    const { cooldownSeconds } = await this.otpService.resend({ email });
+
+    // Report the active challenge window so the client can show a countdown.
+    // We deliberately do not read back the code — only its expiry metadata.
+    const active = await this.prisma.otpVerification.findFirst({
+      where: { destination: email, purpose: OtpPurpose.REGISTRATION, verifiedAt: null },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const expiresInSeconds = active
+      ? Math.max(0, Math.round((active.expiresAt.getTime() - Date.now()) / 1000))
+      : env.otpExpiryMinutes * 60;
+
+    return {
+      destination: maskEmail(email),
+      expiresInSeconds,
+      resendCooldownSeconds: cooldownSeconds,
+    };
+  }
+
+  /**
    * Signs in (or provisions) an account from a verified Google ID token.
    * Existing password-based accounts are never silently linked or taken over.
    */
@@ -434,24 +513,23 @@ export class AuthService {
 
     let user: User;
     try {
-      user = await this.prisma.$transaction(async (tx) => {
-        const created = await tx.user.create({
-          data: {
-            email,
-            firstName: profile.firstName,
-            lastName: profile.lastName ?? null,
-            role: "STUDENT",
-            authProvider: "GOOGLE",
-            // Google only yields email_verified=true tokens (enforced by
-            // verifyGoogleIdToken / exchangeGoogleCodeForProfile), so the
-            // contact method is verified.
-            isVerified: true,
-            passwordHash: null,
-          },
-        });
-        await tx.studentProfile.create({ data: { userId: created.id } });
-        return created;
-      });
+      user = await this.createUser(
+        {
+          email,
+          firstName: profile.firstName,
+          lastName: profile.lastName ?? null,
+          role: "STUDENT",
+          authProvider: "GOOGLE",
+          // Google only yields email_verified=true tokens (enforced by
+          // verifyGoogleIdToken / exchangeGoogleCodeForProfile), so the
+          // contact method is verified.
+          isVerified: true,
+          passwordHash: null,
+        },
+        async (tx, userId) => {
+          await tx.studentProfile.create({ data: { userId } });
+        }
+      );
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
