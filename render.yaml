@@ -1,0 +1,81 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# This file keeps the NON-SECRET deployment config in version control so it
+# stays in sync with the repo. Secrets are intentionally NOT stored here: they
+# use `sync: false`, which tells Render to keep whatever value you set in the
+# dashboard and NEVER overwrite it from this file.
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ IMPORTANT — adopting an EXISTING service                                 │
+# │ If `mybrainbud-backend` already exists as a manually-created service, a   │
+# │ blueprint sync will try to CREATE a new service with this name and fail   │
+# │ on the name clash. Either delete & recreate it from this blueprint, or     │
+# │ change `name` below. Also confirm `repo` points at the GitHub repo Render  │
+# │ is actually connected to.                                                 │
+# └──────────────────────────────────────────────────────────────────────────┘
+
+services:
+  - type: web
+    name: mybrainbud-backend
+    runtime: node
+
+    # ── Editable to match your account ──────────────────────────────────────
+    plan: free            # e.g. starter / standard — match your current plan
+    region: frankfurt     # closest Render region to the Neon DB (London/eu-west-2)
+
+    # Which repo/branch this service builds and auto-deploys from.
+    repo: https://github.com/Mybrainbud/Mybrainbud_Backend
+    branch: master
+    autoDeploy: true
+
+    # Install deps → generate the Prisma client (types need it at build) → compile.
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npm start
+    # Runs after build, before the new version goes live — applies DB migrations.
+    preDeployCommand: npx prisma migrate deploy
+
+    # Server exposes GET /health (see src/app.ts). Do NOT set PORT — Render
+    # injects it automatically and the app reads process.env.PORT.
+    healthCheckPath: /health
+
+    envVars:
+      # ── Non-secret config (lives in the repo) ─────────────────────────────
+      - key: NODE_ENV
+        value: production
+      - key: JWT_ACCESS_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+
+      # Public by design (the client id is embedded in frontend code too).
+      - key: GOOGLE_CLIENT_ID
+        value: 98641329819-sbp9bri5dsbnriru7h5i6s9l6r54vn9g.apps.googleusercontent.com
+      - key: GOOGLE_CALLBACK_URL
+        value: https://mybrainbud-backend.onrender.com/api/auth/google/callback
+
+      - key: EMAIL_DELIVERY_PROVIDER
+        value: resend
+      # NOTE: no surrounding quotes — Render sets the literal string value.
+      - key: EMAIL_FROM
+        value: "MyBrainBud <verification@mybrainbud.com>"
+
+      # >>> EDIT THESE to your real frontend origin (no trailing slash) <<<
+      # A wrong value breaks credentialed cookies and the Google login redirect.
+      - key: CORS_ORIGIN
+        value: https://REPLACE-WITH-YOUR-FRONTEND-ORIGIN
+      - key: FRONTEND_URL
+        value: https://REPLACE-WITH-YOUR-FRONTEND-ORIGIN
+
+      # ── Secrets: dashboard-only, never committed ──────────────────────────
+      # Set each of these in Render → Environment. `sync: false` keeps the
+      # dashboard value and prevents the blueprint from touching it.
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
