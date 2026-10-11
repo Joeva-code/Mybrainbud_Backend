@@ -119,9 +119,9 @@ describe("Gmail SMTP delivery provider", () => {
       port: 587,
       secure: false,
       auth: { user: "test@gmail.com", pass: "app-password" },
-      connectionTimeout: 30000,
-      greetingTimeout: 15000,
-      socketTimeout: 30000,
+      connectionTimeout: 10000,
+      greetingTimeout: 5000,
+      socketTimeout: 10000,
     });
   });
 

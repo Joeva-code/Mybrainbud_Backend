@@ -1,4 +1,3 @@
-import { Resend } from "resend";
 import { createTransport, Transporter } from "nodemailer";
 import { env } from "../../config/env";
 import { ServiceUnavailableError } from "../../utils/errors";
@@ -8,14 +7,9 @@ import { ServiceUnavailableError } from "../../utils/errors";
  *
  * Delivery is pluggable behind this interface:
  *
- * - "resend"  — production email via Resend API (https://resend.com). Uses
- *               RESEND_API_KEY to send and EMAIL_FROM as the sender. Fails
- *               safely (503) when unconfigured or when the API rejects a send.
- *               Works on all hosting tiers (no outbound SMTP needed).
  * - "gmail"   — production email via Gmail SMTP. Uses SMTP_HOST, SMTP_PORT,
- *               SMTP_USER, SMTP_PASS, EMAIL_FROM. Uses STARTTLS on port 587
- *               or SSL on port 465. Fails safely (503) when unconfigured or
- *               when sending fails. May not work on hosting with blocked SMTP.
+ *               SMTP_USER, SMTP_PASS, EMAIL_FROM. Uses STARTTLS on port 587.
+ *               Fails safely (503) when unconfigured or when sending fails.
  * - "console" — development/test only. Prints the message to the server log.
  *               Refuses to run in production so we never pretend a message
  *               was delivered.
@@ -44,8 +38,6 @@ const DELIVERY_UNAVAILABLE_MESSAGE =
 /** Returns true when a delivery provider is configured for the current environment. */
 export function isDeliveryConfigured(): boolean {
   switch (env.emailDeliveryProvider) {
-    case "resend":
-      return Boolean(env.resendApiKey && env.emailFrom);
     case "gmail":
       return Boolean(
         env.smtpHost && env.smtpPort && env.smtpUser && env.smtpPass && env.emailFrom
@@ -66,54 +58,6 @@ export function isDeliveryConfigured(): boolean {
 export function ensureDeliveryConfigured(): void {
   if (!isDeliveryConfigured()) {
     throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
-  }
-}
-
-/**
- * Sends transactional email via the Resend SDK (https://resend.com).
- *
- * The SDK returns a discriminated result: on success `error` is null and `data`
- * carries the message id; on failure `data` is null and `error` describes the
- * rejection. Any failure is surfaced as a generic 503 so callers never leak
- * provider internals to the client.
- */
-class ResendDeliveryProvider implements DeliveryProvider {
-  readonly name = "resend";
-
-  private readonly client: Resend;
-
-  constructor(
-    private readonly apiKey: string,
-    private readonly from: string
-  ) {
-    this.client = new Resend(apiKey);
-  }
-
-  async send(message: DeliveryMessage): Promise<void> {
-    try {
-      const { data, error } = await this.client.emails.send({
-        from: this.from,
-        to: message.to,
-        subject: message.subject,
-        text: message.text,
-        html: message.html,
-      });
-
-      if (error || !data) {
-        // Log server-side for debugging without exposing details to the client.
-        console.error(
-          `[Delivery:resend] Send failed${error ? `: ${error.name} (status ${error.statusCode ?? "n/a"})` : ""}`
-        );
-        throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
-      }
-
-      console.log(`[Delivery:resend] Message sent: ${data.id}`);
-    } catch (error) {
-      if (error instanceof ServiceUnavailableError) throw error;
-      // Network/transport failures are reported the same generic way.
-      console.error("[Delivery:resend] Failed to reach the Resend API");
-      throw new ServiceUnavailableError(DELIVERY_UNAVAILABLE_MESSAGE);
-    }
   }
 }
 
@@ -218,12 +162,6 @@ let cachedProvider: DeliveryProvider | null = null;
 export function getDeliveryProvider(): DeliveryProvider {
   if (cachedProvider) return cachedProvider;
   switch (env.emailDeliveryProvider) {
-    case "resend":
-      cachedProvider =
-        env.resendApiKey && env.emailFrom
-          ? new ResendDeliveryProvider(env.resendApiKey, env.emailFrom)
-          : new NoneDeliveryProvider();
-      break;
     case "gmail":
       cachedProvider =
         env.smtpHost && env.smtpPort && env.smtpUser && env.smtpPass && env.emailFrom
