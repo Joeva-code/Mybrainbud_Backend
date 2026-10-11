@@ -75,12 +75,8 @@ export const env = {
   googleOAuthSuccessRedirect: process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT,
   googleOAuthFailureRedirect: process.env.GOOGLE_OAUTH_FAILURE_REDIRECT,
 
-  // Outbound message delivery ("gmail" | "mailersend" | "console" | "none")
+  // Outbound message delivery ("gmail" | "console" | "none")
   emailDeliveryProvider: (process.env.EMAIL_DELIVERY_PROVIDER || "console").toLowerCase(),
-
-  // MailerSend HTTPS API (https://developers.mailersend.com/)
-  // MAILERSEND_API_KEY, EMAIL_FROM
-  mailersendApiKey: process.env.MAILERSEND_API_KEY,
 
   // Gmail SMTP (https://support.google.com/accounts/answer/185833)
   // SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM

@@ -54,10 +54,15 @@ services:
         value: https://mybrainbud-backend.onrender.com/api/auth/google/callback
 
       - key: EMAIL_DELIVERY_PROVIDER
-        value: mailersend
+        value: gmail
       # NOTE: no surrounding quotes — Render sets the literal string value.
       - key: EMAIL_FROM
         value: "MyBrainBud <verification@mybrainbud.com>"
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      # Use 465 (SSL) on Render free tier; 587 (STARTTLS) often blocked
+      - key: SMTP_PORT
+        value: "465"
 
       # >>> EDIT THESE to your real frontend origin (no trailing slash) <<<
       # A wrong value breaks credentialed cookies and the Google login redirect.
@@ -77,5 +82,7 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
-      - key: MAILERSEND_API_KEY
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
         sync: false
