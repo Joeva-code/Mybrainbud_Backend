@@ -233,15 +233,16 @@ model User {
 }
 
 model OtpVerification {
-  id          String      @id @default(uuid())
-  userId      String?
-  destination String
-  purpose     OtpPurpose  @default(REGISTRATION)
-  codeHash    String
-  expiresAt   DateTime
-  verifiedAt  DateTime?
-  attempts    Int         @default(0)
-  createdAt   DateTime    @default(now())
+  id              String      @id @default(uuid())
+  userId          String?
+  destination     String
+  purpose         OtpPurpose  @default(REGISTRATION)
+  codeHash        String
+  expiresAt       DateTime
+  verifiedAt      DateTime?
+  attempts        Int         @default(0)
+  createdAt       DateTime    @default(now())
+  registrationData Json?
 
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 

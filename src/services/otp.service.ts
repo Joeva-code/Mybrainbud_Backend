@@ -4,6 +4,7 @@ import { env } from "../config/env";
 import { AuthConstants } from "../constants";
 import { ApiError, ServiceUnavailableError, UnauthorizedError } from "../utils/errors";
 import { DeliveryProvider, ensureDeliveryConfigured, getDeliveryProvider } from "./delivery";
+import { PendingRegistrationData } from "../types/auth.types";
 
 /** Any Prisma client (standalone or interactive-transaction client). */
 export type OtpClient = Prisma.TransactionClient | PrismaClient;
@@ -33,6 +34,7 @@ function hashesMatch(a: string, b: string): boolean {
 
 export interface OtpIssueResult {
   expiresAt: Date;
+  code?: string;
 }
 
 export interface ResendResult {
@@ -111,7 +113,64 @@ export class OtpService {
         : new ServiceUnavailableError("Verification code delivery failed. Please try again.");
     }
 
-    return { expiresAt };
+    return { expiresAt, code: env.nodeEnv !== "production" ? code : undefined };
+  }
+
+  /**
+   * Issues a fresh challenge with registration data stored in the verification
+   * record. The user account is created only after OTP verification.
+   */
+  async issueAndSendWithRegistrationData(
+    destination: string,
+    purpose: OtpPurpose,
+    registrationData: PendingRegistrationData
+  ): Promise<OtpIssueResult> {
+    ensureDeliveryConfigured();
+
+    const normalizedDestination = destination.trim().toLowerCase();
+    const code = generateOtpCode();
+    const expiresAt = new Date(Date.now() + env.otpExpiryMinutes * 60 * 1000);
+    const activeWhere = {
+      destination: normalizedDestination,
+      purpose,
+      verifiedAt: null,
+    };
+
+    // Supersede any previous active code for this challenge.
+    await this.prisma.otpVerification.deleteMany({ where: activeWhere });
+    await this.prisma.otpVerification.create({
+      data: {
+        userId: null, // No user yet - will be created after verification
+        destination: normalizedDestination,
+        purpose,
+        codeHash: hashOtpCode(code, normalizedDestination),
+        expiresAt,
+        registrationData: registrationData as any,
+      },
+    });
+
+    try {
+      await this.delivery.send({
+        to: normalizedDestination,
+        subject: "Your MyBrainBud verification code",
+        text:
+          `Your MyBrainBud verification code is: ${code}\n\n` +
+          `It expires in ${env.otpExpiryMinutes} minutes. ` +
+          `If you did not request this code, you can safely ignore this message.`,
+      });
+    } catch (error) {
+      // Remove the undelivered challenge so it cannot be misused.
+      try {
+        await this.prisma.otpVerification.deleteMany({ where: activeWhere });
+      } catch {
+        console.error("[OtpService] Failed to clean up undelivered challenge");
+      }
+      throw error instanceof ApiError
+        ? error
+        : new ServiceUnavailableError("Verification code delivery failed. Please try again.");
+    }
+
+    return { expiresAt, code: env.nodeEnv !== "production" ? code : undefined };
   }
 
   /**
@@ -131,13 +190,10 @@ export class OtpService {
       where: { email: { equals: email, mode: "insensitive" } },
     });
 
-    if (!user?.email || user.isVerified || !user.isActive) {
-      return { cooldownSeconds: env.otpResendCooldownSeconds };
-    }
-
+    // Check for pending registration (no user created yet)
     const purpose = OtpPurpose.REGISTRATION;
     const activeWhere = {
-      destination: user.email,
+      destination: email,
       purpose,
       verifiedAt: null,
     };
@@ -147,6 +203,13 @@ export class OtpService {
       orderBy: { createdAt: "desc" },
     });
 
+    const hasPendingRegistration = latest?.registrationData && !latest.userId;
+    const isExistingUser = user?.email && !user.isVerified && user.isActive;
+
+    if (!hasPendingRegistration && !isExistingUser) {
+      return { cooldownSeconds: env.otpResendCooldownSeconds };
+    }
+
     const now = Date.now();
     const withinCooldown =
       latest !== null &&
@@ -154,7 +217,7 @@ export class OtpService {
 
     const hourAgo = new Date(now - 60 * 60 * 1000);
     const recentCount = await this.prisma.otpVerification.count({
-      where: { destination: user.email, purpose, createdAt: { gte: hourAgo } },
+      where: { destination: email, purpose, createdAt: { gte: hourAgo } },
     });
 
     if (withinCooldown || recentCount >= env.otpMaxResendsPerHour) {
@@ -163,7 +226,14 @@ export class OtpService {
     }
 
     try {
-      await this.issueAndSend(user.id, user.email, purpose);
+      if (hasPendingRegistration && latest) {
+        // Resend for pending registration - use stored registration data
+        const registrationData = latest.registrationData as unknown as PendingRegistrationData;
+        await this.issueAndSendWithRegistrationData(email, purpose, registrationData);
+      } else if (isExistingUser && user) {
+        // Resend for existing unverified user
+        await this.issueAndSend(user.id!, user.email!, purpose);
+      }
     } catch {
       // Never leak delivery failures (or account existence) through this
       // response; log server-side without any secrets.
@@ -183,7 +253,7 @@ export class OtpService {
   async consumeCode(
     client: OtpClient,
     params: { destination: string; purpose: OtpPurpose; code: string }
-  ): Promise<User> {
+  ): Promise<{ user: User | null; registrationData: PendingRegistrationData | null }> {
     const destination = params.destination.trim().toLowerCase();
     const now = new Date();
 
@@ -225,13 +295,12 @@ export class OtpService {
     }
 
     const user = record.userId
-      ? await client.user.findUnique({ where: { id: record.userId } })
+      ? await client.user.findUnique({ where: { id: record.userId as string } })
       : null;
-    if (!user) {
-      throw new UnauthorizedError(AuthConstants.OTP_INVALID_MESSAGE);
-    }
 
-    return user;
+    const registrationData = record.registrationData as unknown as PendingRegistrationData | null;
+
+    return { user, registrationData };
   }
 }
 

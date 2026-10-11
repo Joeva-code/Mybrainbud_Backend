@@ -3,7 +3,7 @@ import bcrypt from "bcrypt";
 import jwt, { SignOptions } from "jsonwebtoken";
 import { createHash, randomUUID } from "node:crypto";
 import { env } from "../config/env";
-import { AuthConstants } from "../constants";
+import { UserRole, UserRoles, AuthConstants } from "../constants";
 import {
   UnauthorizedError,
   ConflictError,
@@ -21,6 +21,7 @@ import {
   ResendOtpDto,
   ResumeSignupDto,
   GoogleAuthDto,
+  PendingRegistrationData,
 } from "../types/auth.types";
 import { OtpService, ResendResult } from "./otp.service";
 import { ensureDeliveryConfigured } from "./delivery";
@@ -229,50 +230,25 @@ export class AuthService {
     // (validator guarantees at least one of name/firstName is present).
     const { firstName, lastName } = resolveName(dto);
 
-    // User + role-specific profile are created atomically so a partial
-    // failure can never leave orphaned records. The id is app-generated and
-    // short (see createUser), retrying on the rare collision.
-    let user: User;
-    try {
-      const role = dto.role || "STUDENT";
-      user = await this.createUser(
-        {
-          firstName,
-          lastName,
-          email,
-          passwordHash,
-          role,
-          authProvider: "EMAIL",
-          isVerified: false,
-        },
-        async (tx, userId) => {
-          if (role === "STUDENT") {
-            await tx.studentProfile.create({ data: { userId } });
-          } else if (role === "PARENT") {
-            await tx.parentProfile.create({ data: { userId } });
-          } else if (role === "TEACHER") {
-            await tx.teacherProfile.create({ data: { userId } });
-          }
-        }
-      );
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2002"
-      ) {
-        throw new ConflictError("User with this email already exists");
-      }
-      throw error;
-    }
+    const role = dto.role || "STUDENT";
+
+    // Store registration data in OTP verification instead of creating user
+    // User will be created only after OTP verification
+    const registrationData: PendingRegistrationData = {
+      email,
+      passwordHash,
+      firstName,
+      lastName,
+      role,
+    };
 
     try {
-      const { expiresAt } = await this.otpService.issueAndSend(
-        user.id,
+      const { expiresAt, code } = await this.otpService.issueAndSendWithRegistrationData(
         email,
-        OtpPurpose.REGISTRATION
+        OtpPurpose.REGISTRATION,
+        registrationData
       );
       return {
-        user: this.toUserProfile(user),
         verification: {
           destination: maskEmail(email),
           expiresInSeconds: Math.max(
@@ -280,19 +256,10 @@ export class AuthService {
             Math.round((expiresAt.getTime() - Date.now()) / 1000)
           ),
           resendCooldownSeconds: env.otpResendCooldownSeconds,
+          code,
         },
       };
     } catch (error) {
-      // Never leave behind an account that cannot receive its verification
-      // code — the transaction rolled back for profile creation, so removing
-      // the user cascades away profiles and challenges.
-      try {
-        await this.prisma.user.delete({ where: { id: user.id } });
-      } catch {
-        console.error(
-          "[AuthService] Failed to clean up account after delivery failure"
-        );
-      }
       throw error;
     }
   }
@@ -390,29 +357,61 @@ export class AuthService {
   /**
    * Verifies an OTP challenge and, only on success, marks the contact method
    * verified and issues the first authenticated session — all atomically.
+   * If registration data is stored in the OTP verification record, creates
+   * the user account before issuing the session.
    */
   async verifyOtp(dto: VerifyOtpDto): Promise<AuthResponse> {
     const destination = dto.email.trim().toLowerCase();
 
     return this.prisma.$transaction(async (tx) => {
-      let user = await this.otpService.consumeCode(tx, {
+      const { user, registrationData } = await this.otpService.consumeCode(tx, {
         destination,
         purpose: OtpPurpose.REGISTRATION,
         code: dto.code,
       });
 
-      if (!user.isActive) {
-        throw new UnauthorizedError("Account is inactive. Please contact support.");
+      let verifiedUser: User;
+
+      if (registrationData) {
+        // Create the user from registration data
+        verifiedUser = await this.createUser(
+          {
+            firstName: registrationData.firstName,
+            lastName: registrationData.lastName,
+            email: registrationData.email,
+            passwordHash: registrationData.passwordHash,
+            role: registrationData.role as UserRole,
+            authProvider: "EMAIL",
+            isVerified: true,
+          },
+          async (txClient, userId) => {
+            if (registrationData.role === "STUDENT") {
+              await txClient.studentProfile.create({ data: { userId } });
+            } else if (registrationData.role === "PARENT") {
+              await txClient.parentProfile.create({ data: { userId } });
+            } else if (registrationData.role === "TEACHER") {
+              await txClient.teacherProfile.create({ data: { userId } });
+            }
+          }
+        );
+      } else if (user) {
+        // Existing user (e.g., resend flow)
+        verifiedUser = user;
+        if (!verifiedUser.isActive) {
+          throw new UnauthorizedError("Account is inactive. Please contact support.");
+        }
+
+        if (!verifiedUser.isVerified) {
+          verifiedUser = await tx.user.update({
+            where: { id: verifiedUser.id },
+            data: { isVerified: true, lastLoginAt: new Date() },
+          });
+        }
+      } else {
+        throw new UnauthorizedError(AuthConstants.OTP_INVALID_MESSAGE);
       }
 
-      if (!user.isVerified) {
-        user = await tx.user.update({
-          where: { id: user.id },
-          data: { isVerified: true, lastLoginAt: new Date() },
-        });
-      }
-
-      return this.createSession(user, tx);
+      return this.createSession(verifiedUser, tx);
     });
   }
 
@@ -441,20 +440,44 @@ export class AuthService {
 
     const email = dto.email.trim().toLowerCase();
 
+    // Check for pending registration (OTP verification with registrationData but no userId)
+    const active = await this.prisma.otpVerification.findFirst({
+      where: { destination: email, purpose: OtpPurpose.REGISTRATION, verifiedAt: null, userId: null },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const hasPendingRegistration = active?.registrationData;
+
+    // Also check for existing unverified user (legacy flow)
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
+    });
+
+    const isExistingUnverifiedUser = user?.email && !user.isVerified && user.isActive;
+
+    if (!hasPendingRegistration && !isExistingUnverifiedUser) {
+      // Generic response - never reveals whether a pending signup exists
+      return {
+        destination: maskEmail(email),
+        expiresInSeconds: env.otpExpiryMinutes * 60,
+        resendCooldownSeconds: env.otpResendCooldownSeconds,
+      };
+    }
+
     // resend() is enumeration-safe: it only acts on an existing, unverified,
-    // active EMAIL account and silently enforces the cooldown/hourly cap. A
-    // fresh challenge supersedes any previous active code.
+    // active EMAIL account OR pending registration and silently enforces the
+    // cooldown/hourly cap. A fresh challenge supersedes any previous active code.
     const { cooldownSeconds } = await this.otpService.resend({ email });
 
     // Report the active challenge window so the client can show a countdown.
     // We deliberately do not read back the code — only its expiry metadata.
-    const active = await this.prisma.otpVerification.findFirst({
+    const activeChallenge = await this.prisma.otpVerification.findFirst({
       where: { destination: email, purpose: OtpPurpose.REGISTRATION, verifiedAt: null },
       orderBy: { createdAt: "desc" },
     });
 
-    const expiresInSeconds = active
-      ? Math.max(0, Math.round((active.expiresAt.getTime() - Date.now()) / 1000))
+    const expiresInSeconds = activeChallenge
+      ? Math.max(0, Math.round((activeChallenge.expiresAt.getTime() - Date.now()) / 1000))
       : env.otpExpiryMinutes * 60;
 
     return {

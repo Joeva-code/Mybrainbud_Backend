@@ -33,6 +33,14 @@ export interface ResumeSignupDto {
   email: string;
 }
 
+export interface PendingRegistrationData {
+  email: string;
+  passwordHash: string;
+  firstName: string;
+  lastName: string | null;
+  role: string;
+}
+
 export interface GoogleAuthDto {
   credential: string;
 }
@@ -62,11 +70,12 @@ export interface VerificationChallenge {
   destination: string;
   expiresInSeconds: number;
   resendCooldownSeconds: number;
+  /** OTP code (only in development mode). */
+  code?: string;
 }
 
-/** Registration response — the account is created unverified; no session is issued. */
+/** Registration response — the account is NOT created yet; verification required. */
 export interface RegistrationResult {
-  user: UserProfile;
   verification: VerificationChallenge;
 }
 
