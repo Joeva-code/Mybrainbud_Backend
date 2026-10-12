@@ -12,6 +12,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "postman": "node scripts/generate-postman.js",
+    "postman:onboarding": "node scripts/generate-onboarding-postman.js",
     "postinstall": "prisma generate"
   },
   "keywords": [],
