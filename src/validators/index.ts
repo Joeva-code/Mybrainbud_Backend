@@ -57,3 +57,4 @@ export function validateQuery(schema: any) {
 
 export * from "./auth.validator";
 export * from "./student.validator";
+export * from "./onboarding.validator";

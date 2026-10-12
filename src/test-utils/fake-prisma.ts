@@ -56,12 +56,49 @@ export interface FakeResetRow {
   createdAt: Date;
 }
 
+export interface FakeExamRow {
+  id: string;
+  type: string;
+  name: string;
+}
+
+export interface FakeSubjectRow {
+  id: string;
+  name: string;
+  code: string;
+  description: string | null;
+  isActive: boolean;
+}
+
+export interface FakeStudentProfileRow {
+  id: string;
+  userId: string;
+  targetExamId: string | null;
+  studyYear: string | null;
+  onboardingComplete: boolean;
+  profileComplete: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface FakeStudentSubjectRow {
+  id: string;
+  studentId: string;
+  subjectId: string;
+  isActive: boolean;
+  createdAt: Date;
+}
+
 export class FakeDb {
   users: FakeUserRow[] = [];
   otps: FakeOtpRow[] = [];
   sessions: FakeSessionRow[] = [];
   resets: FakeResetRow[] = [];
   profiles: Array<{ userId: string; kind: string }> = [];
+  exams: FakeExamRow[] = [];
+  subjects: FakeSubjectRow[] = [];
+  studentProfiles: FakeStudentProfileRow[] = [];
+  studentSubjects: FakeStudentSubjectRow[] = [];
 
   /** When true, $transaction(callback) throws before running the callback. */
   failTransaction = false;
@@ -79,6 +116,10 @@ export class FakeDb {
     this.sessions = [];
     this.resets = [];
     this.profiles = [];
+    this.exams = [];
+    this.subjects = [];
+    this.studentProfiles = [];
+    this.studentSubjects = [];
     this.failTransaction = false;
     this.throwUniqueOnUserCreate = false;
     this.throwIdCollisionTimes = 0;
@@ -172,12 +213,6 @@ export function createFakePrisma(db: FakeDb) {
       },
     },
 
-    studentProfile: {
-      create: async (args: { data: { userId: string } }) => {
-        db.profiles.push({ userId: args.data.userId, kind: "STUDENT" });
-        return { userId: args.data.userId };
-      },
-    },
     parentProfile: {
       create: async (args: { data: { userId: string } }) => {
         db.profiles.push({ userId: args.data.userId, kind: "PARENT" });
@@ -388,6 +423,138 @@ export function createFakePrisma(db: FakeDb) {
           if (args.data.usedAt) row.usedAt = args.data.usedAt;
         }
         return { count: rows.length };
+      },
+    },
+
+    exam: {
+      findUnique: async (args: {
+        where: { type: string };
+      }): Promise<FakeExamRow | null> => {
+        return db.exams.find((e) => e.type === args.where.type) ?? null;
+      },
+      create: async (args: {
+        data: { type: string; name: string };
+      }): Promise<FakeExamRow> => {
+        const row: FakeExamRow = {
+          id: `exam_${args.data.type.toLowerCase()}`,
+          type: args.data.type,
+          name: args.data.name,
+        };
+        db.exams.push(row);
+        return row;
+      },
+    },
+
+    subject: {
+      findMany: async (args?: {
+        where?: { isActive?: boolean; id?: { in: string[] } };
+        select?: Record<string, boolean>;
+        orderBy?: { name?: "asc" | "desc" };
+      }): Promise<FakeSubjectRow[]> => {
+        let rows = db.subjects.filter((s) => {
+          if (args?.where?.isActive !== undefined && s.isActive !== args.where.isActive) {
+            return false;
+          }
+          if (args?.where?.id?.in && !args.where.id.in.includes(s.id)) {
+            return false;
+          }
+          return true;
+        });
+        if (args?.orderBy?.name) {
+          const dir = args.orderBy.name === "asc" ? 1 : -1;
+          rows = [...rows].sort((a, b) => dir * a.name.localeCompare(b.name));
+        }
+        return rows.map((s) => ({ ...s }));
+      },
+    },
+
+    studentProfile: {
+      create: async (args: { data: { userId: string } }) => {
+        db.profiles.push({ userId: args.data.userId, kind: "STUDENT" });
+        db.studentProfiles.push({
+          id: randomUUID(),
+          userId: args.data.userId,
+          targetExamId: null,
+          studyYear: null,
+          onboardingComplete: false,
+          profileComplete: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        return { userId: args.data.userId };
+      },
+      findUnique: async (args: {
+        where: { userId: string };
+        include?: {
+          targetExam?: { select: Record<string, boolean> };
+          subjects?: {
+            where?: { isActive?: boolean };
+            include?: { subject: { select: Record<string, boolean> } };
+            orderBy?: { createdAt?: "asc" | "desc" };
+          };
+        };
+      }): Promise<any | null> => {
+        const profile =
+          db.studentProfiles.find((p) => p.userId === args.where.userId) ?? null;
+        if (!profile || !args.include) return profile;
+
+        const result: any = { ...profile };
+        if (args.include.targetExam) {
+          result.targetExam = profile.targetExamId
+            ? (db.exams.find((e) => e.id === profile.targetExamId) ?? null)
+            : null;
+        }
+        if (args.include.subjects) {
+          const wantActive = args.include.subjects.where?.isActive;
+          let rows = db.studentSubjects.filter(
+            (ss) =>
+              ss.studentId === profile.id &&
+              (wantActive === undefined || ss.isActive === wantActive)
+          );
+          rows = [...rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+          result.subjects = rows.map((ss) => ({
+            ...ss,
+            subject: db.subjects.find((s) => s.id === ss.subjectId) ?? null,
+          }));
+        }
+        return result;
+      },
+      update: async (args: {
+        where: { userId: string };
+        data: Partial<FakeStudentProfileRow>;
+      }): Promise<FakeStudentProfileRow> => {
+        const profile = db.studentProfiles.find(
+          (p) => p.userId === args.where.userId
+        );
+        if (!profile) throw new Error("Record to update not found.");
+        Object.assign(profile, args.data, { updatedAt: new Date() });
+        return profile;
+      },
+    },
+
+    studentSubject: {
+      deleteMany: async (args: {
+        where: { studentId: string };
+      }): Promise<{ count: number }> => {
+        const before = db.studentSubjects.length;
+        db.studentSubjects = db.studentSubjects.filter(
+          (ss) => ss.studentId !== args.where.studentId
+        );
+        return { count: before - db.studentSubjects.length };
+      },
+      createMany: async (args: {
+        data: Array<{ studentId: string; subjectId: string }>;
+      }): Promise<{ count: number }> => {
+        for (const d of args.data) {
+          db.studentSubjects.push({
+            id: randomUUID(),
+            studentId: d.studentId,
+            subjectId: d.subjectId,
+            isActive: true,
+            createdAt: new Date(),
+          });
+        }
+        return { count: args.data.length };
       },
     },
 
